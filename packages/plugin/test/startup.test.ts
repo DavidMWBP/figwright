@@ -11,12 +11,14 @@ const fakeFigma = (editorType = 'figma', command = '') => ({
   command,
   mode: 'default',
   apiVersion: '1.0.0',
-  root: { name: 'Test file', setRelaunchData: vi.fn() },
+  root: { name: 'Test file', setRelaunchData: vi.fn<(data: Record<string, string>) => void>() },
   currentPage: { id: '0:1', name: 'Page 1', selection: [] },
-  showUI: vi.fn(),
-  on: vi.fn(),
-  ui: { postMessage: vi.fn(), show: vi.fn() },
-  clientStorage: { getAsync: vi.fn().mockResolvedValue(undefined) },
+  showUI: vi.fn<(html: string, options: unknown) => void>(),
+  on: vi.fn<(event: string, callback: () => void) => void>(),
+  ui: { postMessage: vi.fn<(message: unknown) => void>(), show: vi.fn<() => void>() },
+  clientStorage: {
+    getAsync: vi.fn<(key: string) => Promise<unknown>>().mockResolvedValue(undefined),
+  },
 });
 
 const start = async (f: ReturnType<typeof fakeFigma>) => {
@@ -74,7 +76,7 @@ describe('plugin startup relaunch button', () => {
 
   it('writes the same single button when the file already has relaunch data', async () => {
     const f = fakeFigma();
-    let data = { 'run-figwright': '' };
+    let data: Record<string, string> = { 'run-figwright': '' };
     f.root.setRelaunchData.mockImplementation(next => {
       data = next;
     });
