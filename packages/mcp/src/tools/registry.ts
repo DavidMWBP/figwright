@@ -75,6 +75,7 @@ import { listFilesTool } from './list-files.js';
 import { lockNodesTool } from './lock-nodes.js';
 import { moveNodesTool } from './move-nodes.js';
 import { navigateToPageTool } from './navigate-to-page.js';
+import { openFileTool } from './open-file.js';
 import { pingTool } from './ping.js';
 import { removeAnimationStyleTool } from './remove-animation-style.js';
 import { removeManualKeyframeTrackTool } from './remove-manual-keyframe-track.js';
@@ -160,6 +161,7 @@ const DECLARED_TOOL_SPECS: readonly ToolSpec[] = [
   getMotionContextTool,
   listFilesTool,
   useFileTool,
+  openFileTool,
   getDesignContextTool,
   getScreenshotTool,
   saveScreenshotsTool,

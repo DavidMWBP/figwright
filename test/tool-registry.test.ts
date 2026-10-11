@@ -22,6 +22,7 @@ import { createSandboxHandlers } from '../packages/plugin/src/handlers/registry.
 const SERVER_ONLY_TOOLS = new Set([
   'save_screenshots',
   'use_file',
+  'open_file',
   'analyze_project',
   'scan_components',
   'component_map',

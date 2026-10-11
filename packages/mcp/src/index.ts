@@ -45,8 +45,9 @@ import {
   resolveBatchImagePaths,
   resolveImagePath,
 } from './tools/import-image.js';
-import { handleListFiles, LIST_FILES_TOOL_NAME } from './tools/list-files.js';
+import { handleListFiles, LIST_FILES_TOOL_NAME, namedSessions } from './tools/list-files.js';
 import { captureNotices, withRoutingNotice, withSkewNotice } from './tools/notices.js';
+import { handleOpenFile, OPEN_FILE_TOOL_NAME } from './tools/open-file.js';
 import { formatPingResult, handlePing, pingTool } from './tools/ping.js';
 import { ALL_TOOL_SPECS } from './tools/registry.js';
 import { assertWithinLimit, fitNodeList } from './tools/result-budget.js';
@@ -115,7 +116,7 @@ const dispatchCtx = { node, follower, log };
 const dispatch = (tool: string, args: unknown): Promise<unknown> =>
   dispatchTargeted(dispatchCtx, tool, args);
 
-// The two file-targeting tools need to reach *every* connected plugin, not the claimed one, so they
+// The file-targeting tools need to reach *every* connected plugin, not the claimed one, so they
 // take the untargeted dispatcher with an explicit session and a short per-call budget.
 const listSessions = (): ReturnType<typeof listPluginSessions> => listPluginSessions(dispatchCtx);
 const dispatchToSession = (
@@ -186,6 +187,12 @@ const SPECIAL_HANDLERS: Record<string, ToolHandler> = {
     textResult(await handleListFiles(await listSessions(), dispatchToSession)),
   [USE_FILE_TOOL_NAME]: async args =>
     textResult(await handleUseFile(args, listSessions, dispatchToSession)),
+  [OPEN_FILE_TOOL_NAME]: async args =>
+    textResult(
+      await handleOpenFile(args, async () =>
+        namedSessions(await listSessions(), dispatchToSession),
+      ),
+    ),
   [SEARCH_NODES_TOOL_NAME]: nodeListHandler(
     SEARCH_NODES_TOOL_NAME,
     'pass root (a frame or section id) to scope it, or a narrower name or type',
