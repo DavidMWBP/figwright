@@ -12,7 +12,9 @@ export const openFileTool: ToolSpec = {
   description:
     'Ask the OS URL opener to open a Figma file, wait for its Figwright plugin, then claim it ' +
     'for this agent as use_file does. The plugin must already be running in that file, or the ' +
-    'user must start it there; this tool cannot start a plugin. Desktop URL handling has not ' +
+    'user must start it there; this tool cannot start a plugin. In a Figma Design file where ' +
+    'the plugin ran before, click "Run Figwright" in the right-hand panel with nothing selected ' +
+    '(if file permissions allowed the button to be saved). Desktop URL handling has not ' +
     'been verified. Pass a file key or figma.com file/design URL. With fileName, match the exact ' +
     'name (duplicate names are refused); an already connected match is claimed without opening. ' +
     'Without fileName, claim the first session not connected when the call started, because ' +
@@ -144,6 +146,8 @@ export const handleOpenFile = async (
   const timeoutError = () =>
     new Error(
       `Timed out waiting for "${input.fileName ?? input.file}" — start the Figwright plugin in that tab ` +
+        '(in a Figma Design file where it ran before, click "Run Figwright" in the right-hand panel ' +
+        'with nothing selected, if file permissions allowed the button to be saved), ' +
         'and call open_file again (or use_file).',
     );
   const current = await new Promise<readonly PluginSessionInfo[]>((resolve, reject) => {
