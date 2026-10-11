@@ -48,8 +48,8 @@ export interface OpenFileResult {
   claim: FileTarget;
 }
 
-// Provisional desktop URL form. Change only this constant after a live desktop check.
-const FILE_URL_PREFIX = 'figma://file/';
+// Checked live on Figma desktop (Windows) on 2026-10-11.
+const FILE_URL_PREFIX = 'figma://design/';
 const POLL_INTERVAL_MS = 250;
 
 export const buildOpenFileUrl = (file: string): string => {
@@ -76,7 +76,7 @@ export const buildOpenFileUrl = (file: string): string => {
 };
 
 export const openerCommand = (url: string, platform: NodeJS.Platform) => {
-  if (platform === 'win32') return { command: 'cmd', args: ['/c', 'start', '""', url] };
+  if (platform === 'win32') return { command: 'cmd', args: ['/c', `start "" ${url}`] };
   return { command: platform === 'darwin' ? 'open' : 'xdg-open', args: [url] };
 };
 
