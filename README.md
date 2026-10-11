@@ -82,6 +82,8 @@ The plugin isn't on the Figma Community marketplace yet, so install it from the 
 
 Open the Figwright plugin in Figma (**Plugins → Development → Figwright**). It connects to the local server automatically and shows **Connected**. Ask your agent to run `ping` to confirm the link.
 
+After the plugin runs in a Figma Design file, **Run Figwright** appears in the right-hand properties panel with nothing selected, on every page. Click it to start the plugin again, just like the menu. Each start saves the same button, so running it again adds no duplicate or other change. Registration is skipped in FigJam and Dev Mode; if file permissions reject saving the button, startup still works and you can use the plugins menu.
+
 ### 4. (Optional) Install the skills
 
 The [skills](#skills) make agents reach for Figwright at the right moment and follow the grounded workflows:
