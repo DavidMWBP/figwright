@@ -1809,6 +1809,7 @@ const INVERSES: Readonly<Record<string, BatchInverse>> = {
  * either side without someone deciding which, and saying why when it is this one.
  */
 export const NON_BATCHABLE: Readonly<Record<string, string>> = {
+  save_version: 'a saved version cannot be removed from version history; save it before the batch',
   import_variable:
     'a library import has no faithful inverse; import the variable before the batch and use its returned variableId',
   import_style:

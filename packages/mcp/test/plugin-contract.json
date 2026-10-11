@@ -460,6 +460,7 @@
     "delete_page": ["pageId", "requestId"],
     "rename_page": ["name", "pageId", "requestId"],
     "navigate_to_page": ["pageId", "requestId"],
+    "save_version": ["description", "requestId", "title"],
     "set_reactions": [
       "nodeId",
       "reactions",

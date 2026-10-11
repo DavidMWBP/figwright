@@ -88,6 +88,7 @@ import { resizeNodesTool } from './resize-nodes.js';
 import { rotateNodesTool } from './rotate-nodes.js';
 import { saveImageFillsTool } from './save-image-fills.js';
 import { saveScreenshotsTool } from './save-screenshots.js';
+import { saveVersionTool } from './save-version.js';
 import { scanComponentsTool } from './scan-components.js';
 import { scanNodesByTypesTool } from './scan-nodes-by-types.js';
 import { scanTextNodesTool } from './scan-text-nodes.js';
@@ -236,6 +237,7 @@ const DECLARED_TOOL_SPECS: readonly ToolSpec[] = [
   deletePageTool,
   renamePageTool,
   navigateToPageTool,
+  saveVersionTool,
   setReactionsTool,
   removeReactionsTool,
   updateFlowsTool,
