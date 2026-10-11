@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { ErrorCode } from '@figwright/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import { getFileTarget, setFileTarget } from '../../src/routing/target.js';
 import { handleAnalyzeProject } from '../../src/tools/analyze-project.js';
 import { handleComponentMap } from '../../src/tools/component-map.js';
 import { handleDesignContext } from '../../src/tools/design-context-guard.js';
@@ -12,6 +13,8 @@ import { handleDesignDiff } from '../../src/tools/design-diff.js';
 import { handleExportPdf } from '../../src/tools/export-pdf.js';
 import { handleExportVideo } from '../../src/tools/export-video.js';
 import { handleIconMap } from '../../src/tools/icon-map.js';
+import { namedSessions } from '../../src/tools/list-files.js';
+import { handleOpenFile } from '../../src/tools/open-file.js';
 import { ALL_TOOL_SPECS } from '../../src/tools/registry.js';
 import { handleSaveImageFills } from '../../src/tools/save-image-fills.js';
 import { handleSaveScreenshots } from '../../src/tools/save-screenshots.js';
@@ -199,6 +202,39 @@ describe('server-built plugin payloads satisfy the schema the leader validates',
           ],
           (_sessionId, toolName, args) => d(toolName, args),
         ),
+      expected: ['list_files'],
+    },
+    {
+      tool: 'open_file',
+      label: 'open_file (probes connected sessions before claiming)',
+      run: async d => {
+        const previous = getFileTarget();
+        try {
+          return await handleOpenFile(
+            { file: 'AbC123', fileName: 'A' },
+            async () =>
+              namedSessions(
+                [
+                  {
+                    id: 's-1',
+                    fileName: 'A',
+                    pageName: 'Page 1',
+                    lastActivityAt: 1,
+                    pluginVersion: '0.5.0',
+                  },
+                ],
+                (_sessionId, toolName, args) => d(toolName, args),
+              ),
+            {
+              open: async () => {
+                throw new Error('unexpected URL opener');
+              },
+            },
+          );
+        } finally {
+          setFileTarget(previous);
+        }
+      },
       expected: ['list_files'],
     },
   ];
