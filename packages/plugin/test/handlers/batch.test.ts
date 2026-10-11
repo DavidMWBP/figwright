@@ -362,7 +362,7 @@ describe('batch handler', () => {
 
   it('refuses save_version with guidance to save before the batch', async () => {
     const { figmaCtx } = makeFigma({});
-    const saveVersion = vi.fn();
+    const saveVersion = vi.fn<SandboxHandlers[string]>();
     const handler = createBatchHandler(figmaCtx, { save_version: saveVersion });
     await expect(
       handler({ ops: [{ tool: 'save_version', params: { title: 'Before edits' } }] }),

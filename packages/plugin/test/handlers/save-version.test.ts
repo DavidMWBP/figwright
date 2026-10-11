@@ -4,7 +4,7 @@ import { createSandboxHandlers } from '../../src/handlers/registry.js';
 
 const setup = () => {
   const saveVersionHistoryAsync = vi
-    .fn<typeof figma.saveVersionHistoryAsync>()
+    .fn<(title: string, description?: string) => Promise<{ id: string } | null>>()
     .mockResolvedValue({ id: 'version-1' });
   const figmaCtx = {
     root: { name: 'Design file' },
