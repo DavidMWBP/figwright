@@ -14,8 +14,9 @@ export const openFileTool: ToolSpec = {
     'for this agent as use_file does. The plugin must already be running in that file, or the ' +
     'user must start it there; this tool cannot start a plugin. In a Figma Design file where ' +
     'the plugin ran before, click "Run Figwright" in the right-hand panel with nothing selected ' +
-    '(if file permissions allowed the button to be saved). Desktop URL handling has not ' +
-    'been verified. Pass a file key or figma.com file/design URL. With fileName, match the exact ' +
+    '(if file permissions allowed the button to be saved). Desktop URL handling ' +
+    '(figma://design/<key>) was verified live on Windows on 2026-10-11; macOS (open) and Linux ' +
+    '(xdg-open) have not been live-checked. Pass a file key or figma.com file/design URL. With fileName, match the exact ' +
     'name (duplicate names are refused); an already connected match is claimed without opening. ' +
     'Without fileName, claim the first session not connected when the call started, because ' +
     'public plugins cannot report file keys. Returns { ok: true, opened, sessionId, fileName, ' +
@@ -50,8 +51,9 @@ export interface OpenFileResult {
   claim: FileTarget;
 }
 
-// Provisional desktop URL form. Change only this constant after a live desktop check.
-const FILE_URL_PREFIX = 'figma://file/';
+// Checked live on Figma desktop (Windows) on 2026-10-11; macOS (open) and Linux
+// (xdg-open) have not been live-checked.
+const FILE_URL_PREFIX = 'figma://design/';
 const POLL_INTERVAL_MS = 250;
 
 export const buildOpenFileUrl = (file: string): string => {
@@ -78,7 +80,7 @@ export const buildOpenFileUrl = (file: string): string => {
 };
 
 export const openerCommand = (url: string, platform: NodeJS.Platform) => {
-  if (platform === 'win32') return { command: 'cmd', args: ['/c', 'start', '""', url] };
+  if (platform === 'win32') return { command: 'cmd', args: ['/c', `start "" ${url}`] };
   return { command: platform === 'darwin' ? 'open' : 'xdg-open', args: [url] };
 };
 
