@@ -2,7 +2,7 @@
 
 > The MCP server for **[Figwright](https://github.com/awdr74100/figwright)**: a two-way Figma agent for Claude Code, Cursor, Codex, and other MCP clients.
 
-Figwright bridges MCP clients to a Figma plugin over a local WebSocket relay, so an AI agent can both **read** your designs with high-fidelity grounding and **write** back to the canvas. No Figma paid tier required. The server exposes **122 tools** spanning reads, writes, and codebase-grounded context.
+Figwright bridges MCP clients to a Figma plugin over a local WebSocket relay, so an AI agent can both **read** your designs with high-fidelity grounding and **write** back to the canvas. No Figma paid tier required. The server exposes **123 tools** spanning reads, writes, and codebase-grounded context.
 
 ## Usage
 
@@ -20,6 +20,8 @@ Add it to your MCP client config (e.g. Claude Code's `.mcp.json`):
 ```
 
 The server talks to the Figwright Figma plugin running in your Figma app. See the [main repository](https://github.com/awdr74100/figwright) for the full setup (installing the plugin, connecting, and the available skills).
+
+For file targeting, `list_files` lists connected files and `use_file` claims one. `open_file` takes a file key or figma.com file/design URL, asks the OS URL opener to open it, waits for the plugin, and claims it. The plugin must already run in that file, or you must start it there. Desktop URL handling still needs live verification. Pass `fileName` to match the exact name (duplicates are refused); otherwise it claims the first newly connected session. The wait defaults to 120 seconds (`timeoutSec`, maximum 600). It returns `{ ok: true, opened, sessionId, fileName, claim }`, and failures leave the current claim unchanged.
 
 ## Requirements
 
