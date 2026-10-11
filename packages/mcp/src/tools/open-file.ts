@@ -12,8 +12,9 @@ export const openFileTool: ToolSpec = {
   description:
     'Ask the OS URL opener to open a Figma file, wait for its Figwright plugin, then claim it ' +
     'for this agent as use_file does. The plugin must already be running in that file, or the ' +
-    'user must start it there; this tool cannot start a plugin. Desktop URL handling has not ' +
-    'been verified. Pass a file key or figma.com file/design URL. With fileName, match the exact ' +
+    'user must start it there; this tool cannot start a plugin. Desktop URL handling ' +
+    '(figma://design/<key>) was verified live on Windows on 2026-10-11; macOS (open) and Linux ' +
+    '(xdg-open) have not been live-checked. Pass a file key or figma.com file/design URL. With fileName, match the exact ' +
     'name (duplicate names are refused); an already connected match is claimed without opening. ' +
     'Without fileName, claim the first session not connected when the call started, because ' +
     'public plugins cannot report file keys. Returns { ok: true, opened, sessionId, fileName, ' +
@@ -48,7 +49,8 @@ export interface OpenFileResult {
   claim: FileTarget;
 }
 
-// Checked live on Figma desktop (Windows) on 2026-10-11.
+// Checked live on Figma desktop (Windows) on 2026-10-11; macOS (open) and Linux
+// (xdg-open) have not been live-checked.
 const FILE_URL_PREFIX = 'figma://design/';
 const POLL_INTERVAL_MS = 250;
 
