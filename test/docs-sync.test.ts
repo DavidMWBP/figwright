@@ -22,6 +22,10 @@ const COUNTED_DOC_PATHS = ['README.md', 'packages/mcp/README.md'];
 const TOOL_COUNT_CLAIM = /\*{0,2}(\d+)\*{0,2} (?:MCP )?tools\b/g;
 
 describe('README tool counts', () => {
+  it.each(COUNTED_DOC_PATHS)('%s lists open_file for file targeting', path => {
+    const body = readFileSync(join(import.meta.dirname, '..', path), 'utf8');
+    expect(body).toContain('`open_file`');
+  });
   it.each(COUNTED_DOC_PATHS)('%s advertises exactly ALL_TOOL_SPECS.length tools', path => {
     const body = readFileSync(join(import.meta.dirname, '..', path), 'utf8');
     const claims = [...body.matchAll(TOOL_COUNT_CLAIM)].map(m => Number(m[1]));
