@@ -4,9 +4,11 @@ import { resumeHostYield } from './cooperative.js';
 import { dispatchSandboxMessage } from './dispatcher.js';
 import { createSandboxHandlers } from './handlers/registry.js';
 import { createPanelController } from './panel.js';
+import { registerRelaunchButton } from './relaunch.js';
 
 const log = (msg: string): void => console.log(msg);
 
+registerRelaunchButton(figma);
 const panel = createPanelController(figma);
 panel.open(__html__);
 
