@@ -58,7 +58,7 @@ describe('open_file', () => {
     'https://www.figma.com/design/AbC123/Example?node-id=1-2',
     'https://www.figma.com/file/AbC123/Example',
   ])('builds the isolated URL form for %s', file => {
-    expect(buildOpenFileUrl(file)).toBe('figma://file/AbC123');
+    expect(buildOpenFileUrl(file)).toBe('figma://design/AbC123');
   });
   it.each([
     '',
@@ -114,7 +114,7 @@ describe('open_file', () => {
         fileName: 'Target',
         claim: { sessionId: 'new', fileName: 'Target' },
       },
-      calls: [['figma://file/AbC123']],
+      calls: [['figma://design/AbC123']],
       claim: { sessionId: 'new', fileName: 'Target' },
       listeners: 0,
     });
@@ -311,9 +311,9 @@ describe('open_file', () => {
     });
     const result = await handleOpenFile({ file: 'AbC123' }, sessions.read, { clock });
     const expectedCommands = {
-      win32: ['cmd', ['/c', 'start', '""', 'figma://file/AbC123']],
-      darwin: ['open', ['figma://file/AbC123']],
-      linux: ['xdg-open', ['figma://file/AbC123']],
+      win32: ['cmd', ['/c', 'start "" figma://design/AbC123']],
+      darwin: ['open', ['figma://design/AbC123']],
+      linux: ['xdg-open', ['figma://design/AbC123']],
     };
     expect({ result, call: vi.mocked(execFile).mock.calls[0] }).toEqual({
       result: {
@@ -331,10 +331,10 @@ describe('open_file', () => {
     });
   });
   it.each([
-    ['win32', 'cmd', ['/c', 'start', '""', 'figma://file/AbC123']],
-    ['darwin', 'open', ['figma://file/AbC123']],
-    ['linux', 'xdg-open', ['figma://file/AbC123']],
+    ['win32', 'cmd', ['/c', 'start "" figma://design/AbC123']],
+    ['darwin', 'open', ['figma://design/AbC123']],
+    ['linux', 'xdg-open', ['figma://design/AbC123']],
   ] as const)('builds the %s opener command', (platform, command, args) => {
-    expect(openerCommand('figma://file/AbC123', platform)).toEqual({ command, args });
+    expect(openerCommand('figma://design/AbC123', platform)).toEqual({ command, args });
   });
 });

@@ -21,7 +21,7 @@ Add it to your MCP client config (e.g. Claude Code's `.mcp.json`):
 
 The server talks to the Figwright Figma plugin running in your Figma app. See the [main repository](https://github.com/awdr74100/figwright) for the full setup (installing the plugin, connecting, and the available skills).
 
-For file targeting, `list_files` lists connected files and `use_file` claims one. `open_file` takes a file key or figma.com file/design URL, asks the OS URL opener to open it, waits for the plugin, and claims it. The plugin must already run in that file, or you must start it there. Desktop URL handling still needs live verification. Pass `fileName` to match the exact name (duplicates are refused); otherwise it claims the first newly connected session. The wait defaults to 120 seconds (`timeoutSec`, maximum 600). It returns `{ ok: true, opened, sessionId, fileName, claim }`, and failures leave the current claim unchanged.
+For file targeting, `list_files` lists connected files and `use_file` claims one. `open_file` takes a file key or figma.com file/design URL, asks the OS URL opener to open it, waits for the plugin, and claims it. The plugin must already run in that file, or you must start it there. Desktop URL handling (`figma://design/<key>`) was verified live on Windows on 2026-10-11; macOS (`open`) and Linux (`xdg-open`) have not been live-checked. Pass `fileName` to match the exact name (duplicates are refused); otherwise it claims the first newly connected session. The wait defaults to 120 seconds (`timeoutSec`, maximum 600). It returns `{ ok: true, opened, sessionId, fileName, claim }`, and failures leave the current claim unchanged.
 
 ## Requirements
 
