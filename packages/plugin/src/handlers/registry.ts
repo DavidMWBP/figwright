@@ -79,6 +79,7 @@ import { createReparentNodesHandler } from './reparent-nodes.js';
 import { createResizeNodesHandler } from './resize-nodes.js';
 import { createRotateNodesHandler } from './rotate-nodes.js';
 import { createSaveImageFillsHandler } from './save-image-fills.js';
+import { createSaveVersionHandler } from './save-version.js';
 import { createScanNodesByTypesHandler } from './scan-nodes-by-types.js';
 import { createScanTextNodesHandler } from './scan-text-nodes.js';
 import { createSearchNodesHandler } from './search-nodes.js';
@@ -193,6 +194,7 @@ export const createSandboxHandlers = (figmaApi: typeof figma): SandboxHandlers =
     delete_page: createDeletePageHandler(figmaCtx),
     rename_page: createRenamePageHandler(figmaCtx),
     navigate_to_page: createNavigateToPageHandler(figmaCtx),
+    save_version: createSaveVersionHandler(figmaCtx),
     // Prototype + components
     set_reactions: createSetReactionsHandler(figmaCtx),
     remove_reactions: createRemoveReactionsHandler(figmaCtx),

@@ -46,6 +46,11 @@ interface Canary {
 const CANARIES: Canary[] = [
   { what: 'string', schema: z.string(), json: { type: 'string' } },
   {
+    what: 'string requiring a non-whitespace character',
+    schema: z.string().regex(/\S/),
+    json: { type: 'string', pattern: '\\S' },
+  },
+  {
     what: 'described string',
     schema: z.string().describe('d'),
     json: { type: 'string', description: 'd' },

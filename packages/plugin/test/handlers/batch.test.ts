@@ -360,6 +360,18 @@ describe('batch handler', () => {
     expect(store.get('1:1')).toMatchObject({ name: 'A' }); // untouched
   });
 
+  it('refuses save_version with guidance to save before the batch', async () => {
+    const { figmaCtx } = makeFigma({});
+    const saveVersion = vi.fn();
+    const handler = createBatchHandler(figmaCtx, { save_version: saveVersion });
+    await expect(
+      handler({ ops: [{ tool: 'save_version', params: { title: 'Before edits' } }] }),
+    ).rejects.toThrow(
+      /a saved version cannot be removed from version history; save it before the batch/,
+    );
+    expect(saveVersion).not.toHaveBeenCalled();
+  });
+
   it('rejects create_component with fromNodeId (no faithful inverse) at validate time', async () => {
     const { figmaCtx, store } = makeFigma({ '1:1': { id: '1:1', type: 'FRAME', name: 'A' } });
     const handler = createBatchHandler(figmaCtx, realWrites(figmaCtx));
