@@ -273,7 +273,7 @@ export const attachLeaderEndpoints = (http: HttpServer, deps: LeaderEndpointDeps
             // The caller's own arguments, never checkWireArgs' parsed output: parsing strips keys
             // this build does not know, which is precisely what a newer caller needs kept.
             args,
-            deps.rpcTimeoutMs ?? getRelayBudget(toolName),
+            deps.rpcTimeoutMs ?? getRelayBudget(toolName, args),
             sessionId,
             served => {
               notice = relay.skewNotice(served);

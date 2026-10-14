@@ -43,6 +43,27 @@ const setup = (timeoutMs?: number): Harness => {
 };
 
 describe('createToolBridge', () => {
+  it.each([
+    [1, 130_000],
+    [12, 240_000],
+    [100, 600_000],
+  ])('uses the batch budget for %i ops', async (count, budget) => {
+    vi.useFakeTimers();
+    const { bridge } = setup();
+    try {
+      const answer = bridge
+        .handler('batch', { ops: Array.from({ length: count }, () => ({})) })
+        .catch(error => error);
+      await vi.advanceTimersByTimeAsync(budget - 1);
+      expect(bridge.pendingCount()).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await answer).toBeInstanceOf(Error);
+      expect(bridge.pendingCount()).toBe(0);
+    } finally {
+      bridge.dispose();
+      vi.useRealTimers();
+    }
+  });
   it('posts a tagged tool-call when handler is invoked', async () => {
     const { bridge, sent, emit } = setup();
     const promise = bridge.handler('ping', { foo: 1 });

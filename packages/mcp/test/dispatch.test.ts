@@ -27,6 +27,33 @@ const makeNode = (overrides: Partial<Node>): Node =>
 const makeFollower = (overrides: Partial<Follower>): Follower => overrides as unknown as Follower;
 
 describe('dispatchTool', () => {
+  it.each([true, false])('passes the op count to the budget on leader=%s', async leader => {
+    let budget: number | undefined;
+    const node = makeNode({
+      isLeader: () => leader,
+      getLeader: () =>
+        ({
+          relay: {
+            skewNotice: () => null,
+            sendRequest: async (_name: string, _args: unknown, timeout: number) => {
+              budget = timeout;
+              return { ok: true };
+            },
+          },
+        }) as unknown as ReturnType<Node['getLeader']>,
+    });
+    const follower = makeFollower({
+      sendRpc: async (_name, _args, _id, _session, timeout) => {
+        budget = timeout;
+        return { kind: 'ok', requestId: 'r', result: { ok: true } };
+      },
+    });
+    const args = { ops: Array.from({ length: 12 }, () => ({})) };
+    await dispatchTool({ node, follower }, 'batch', args);
+    expect(budget).toBe(leader ? 245_000 : 250_000);
+    await dispatchTool({ node, follower }, 'batch', args, { perCallTimeoutMs: 17 });
+    expect(budget).toBe(17);
+  });
   it('routes to Relay.sendRequest when local node is leader', async () => {
     const calls: Array<{ name: string; args: unknown }> = [];
     const node = makeNode({

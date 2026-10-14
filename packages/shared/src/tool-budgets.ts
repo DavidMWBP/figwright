@@ -61,13 +61,22 @@ const HEAVY_TOOLS: ReadonlySet<string> = new Set([
 ]);
 
 /** Base budget `B`: how long the Figma sandbox itself may take. Used by the UI → sandbox bridge. */
-export const getToolBudget = (toolName: string): number =>
-  HEAVY_TOOLS.has(toolName) ? HEAVY_TOOL_BUDGET_MS : DEFAULT_TOOL_BUDGET_MS;
+// Batch gets the existing 120s base plus 10s per op, capped at 10 minutes (48 ops).
+// The base leaves room for capture and rollback; growth accommodates sequential writes without
+// letting an unbounded op list create an unbounded wait. This is a budget, not an API latency bound.
+export const BATCH_ROLLBACK_RESERVE_MS = 60_000;
+export const getToolBudget = (toolName: string, params?: unknown): number => {
+  if (toolName === 'batch') {
+    const ops = (params as { ops?: unknown } | null)?.ops;
+    return Math.min(600_000, 120_000 + (Array.isArray(ops) ? ops.length : 0) * 10_000);
+  }
+  return HEAVY_TOOLS.has(toolName) ? HEAVY_TOOL_BUDGET_MS : DEFAULT_TOOL_BUDGET_MS;
+};
 
 /** Relay → plugin request budget = B + one margin, so the sandbox bridge (inner) fires first. */
-export const getRelayBudget = (toolName: string): number =>
-  getToolBudget(toolName) + BUDGET_LAYER_MARGIN_MS;
+export const getRelayBudget = (toolName: string, params?: unknown): number =>
+  getToolBudget(toolName, params) + BUDGET_LAYER_MARGIN_MS;
 
 /** Follower → leader RPC budget = B + two margins, the outermost layer on the multi-node path. */
-export const getFollowerBudget = (toolName: string): number =>
-  getToolBudget(toolName) + 2 * BUDGET_LAYER_MARGIN_MS;
+export const getFollowerBudget = (toolName: string, params?: unknown): number =>
+  getToolBudget(toolName, params) + 2 * BUDGET_LAYER_MARGIN_MS;

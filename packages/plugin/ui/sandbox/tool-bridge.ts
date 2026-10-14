@@ -73,7 +73,7 @@ export const createToolBridge = (opts: ToolBridgeOptions = {}): ToolBridge => {
       const id = newId();
       // Per-tool budget (innermost layer B) so a heavy tool isn't capped at the default window while
       // the relay still waits. An explicit opts.timeoutMs overrides for tests. See getToolBudget.
-      const timeoutMs = opts.timeoutMs ?? getToolBudget(method);
+      const timeoutMs = opts.timeoutMs ?? getToolBudget(method, params);
       const timer = setTimeout(() => {
         pending.delete(id);
         const message = `sandbox tool timeout (method=${method})`;
