@@ -23,7 +23,7 @@ it('attributes a failed variable capture before any batch write', async () => {
     opacity: 0.5,
     boundVariables: { opacity: { type: 'VARIABLE_ALIAS', id: 'V:2' } },
   };
-  const write = vi.fn(() => {
+  const write = vi.fn<() => { ok: boolean }>(() => {
     target.opacity = 1;
     return { ok: true };
   });

@@ -35,7 +35,7 @@ describe('get_screenshot handler', () => {
   it('reports an export that fails twice without a third attempt', async () => {
     vi.useFakeTimers();
     try {
-      const exportAsync = vi.fn().mockRejectedValue(CONNECTION_ERROR);
+      const exportAsync = vi.fn<() => Promise<Uint8Array>>().mockRejectedValue(CONNECTION_ERROR);
       const node = { id: '1:2', exportAsync } as unknown as BaseNode;
       const reading = Promise.resolve(
         createSandboxHandlers({

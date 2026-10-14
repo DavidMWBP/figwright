@@ -8,7 +8,7 @@ import { unloadedPage } from './page-fake.js';
 it('wraps variable lookup on a frozen host API', async () => {
   const variable = { id: 'V:2' } as Variable;
   const variables = Object.freeze({
-    getVariableByIdAsync: vi.fn(async () => variable),
+    getVariableByIdAsync: vi.fn<(id: string) => Promise<Variable | null>>(async () => variable),
   });
   const ctx = withInstanceIdLookup({ variables } as unknown as typeof figma);
   await expect(ctx.variables.getVariableByIdAsync('V:2')).resolves.toBe(variable);
