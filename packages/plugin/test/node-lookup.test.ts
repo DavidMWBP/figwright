@@ -1,5 +1,5 @@
 import type { GetNodeMotionResult, MutateResult } from '@figwright/shared';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createSandboxHandlers } from '../src/handlers/registry.js';
 import { withInstanceIdLookup } from '../src/node-lookup.js';
@@ -115,16 +115,50 @@ describe('a healthy by-id lookup is used as is', () => {
 });
 
 describe('lookup rejection context', () => {
+  it.each([
+    [BY_ID_TIMEOUT, 2, /failed twice/],
+    [
+      new TypeError('other failure'),
+      1,
+      /^getNodeByIdAsync\(8:8\) failed: other failure The id may not exist; other reads may still work\.$/,
+    ],
+    [new TypeError(BY_ID_TIMEOUT), 1, /failed: Unable to establish/],
+    ['Unable to establish connection to Figma after 10 seconds', 1, /failed: Unable to establish/],
+  ])('bounds attempts and preserves other rejections: %s', async (cause, attempts, message) => {
+    vi.useFakeTimers();
+    try {
+      const lookup = vi.fn<(id: string) => Promise<BaseNode | null>>().mockRejectedValue(cause);
+      const reading = withInstanceIdLookup({
+        getNodeByIdAsync: lookup,
+      } as unknown as typeof figma)
+        .getNodeByIdAsync('8:8')
+        .catch(error => error);
+      await vi.runAllTimersAsync();
+      const error = await reading;
+      expect(error.message).toMatch(message as RegExp);
+      expect(lookup).toHaveBeenCalledTimes(attempts as number);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it.each(['8:8', 'I8:8;8:9'])('names the failing plain or root lookup for %s', async id => {
-    const ctx = withInstanceIdLookup({
-      getNodeByIdAsync: async () => Promise.reject(BY_ID_TIMEOUT),
-    } as unknown as typeof figma);
-    const failure = ctx.getNodeByIdAsync(id);
-    await expect(failure).rejects.toBeInstanceOf(Error);
-    await expect(failure).rejects.toMatchObject({ cause: BY_ID_TIMEOUT });
-    await expect(failure).rejects.toThrow('getNodeByIdAsync(8:8)');
-    await expect(failure).rejects.toThrow(BY_ID_TIMEOUT);
-    await expect(failure).rejects.toThrow(/id may not exist.*other reads may still work/);
+    vi.useFakeTimers();
+    try {
+      const ctx = withInstanceIdLookup({
+        getNodeByIdAsync: async () => Promise.reject(BY_ID_TIMEOUT),
+      } as unknown as typeof figma);
+      const failure = ctx.getNodeByIdAsync(id);
+      const observed = failure.catch(error => error);
+      await vi.runAllTimersAsync();
+      await observed;
+      await expect(failure).rejects.toBeInstanceOf(Error);
+      await expect(failure).rejects.toMatchObject({ cause: { cause: BY_ID_TIMEOUT } });
+      await expect(failure).rejects.toThrow('getNodeByIdAsync(8:8)');
+      await expect(failure).rejects.toThrow(BY_ID_TIMEOUT);
+      await expect(failure).rejects.toThrow(/id may not exist.*other reads may still work/);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

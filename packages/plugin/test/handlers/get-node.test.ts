@@ -1,7 +1,9 @@
 import type { GetNodeResult } from '@figwright/shared';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createGetNodeHandler } from '../../src/handlers/get-node.js';
+import { createSandboxHandlers } from '../../src/handlers/registry.js';
+import { CONNECTION_ERROR } from '../read-retry-fake.js';
 
 const fake = (overrides: Record<string, unknown> = {}): SceneNode =>
   ({
@@ -24,6 +26,25 @@ const fakeFigma = (lookup: Record<string, BaseNode | null>): typeof figma =>
   }) as unknown as typeof figma;
 
 describe('get_node handler', () => {
+  it('retries a connection rejection once and returns the node', async () => {
+    vi.useFakeTimers();
+    try {
+      const lookup = vi
+        .fn<(id: string) => Promise<BaseNode | null>>()
+        .mockRejectedValueOnce(CONNECTION_ERROR)
+        .mockResolvedValue(fake());
+      const reading = Promise.resolve(
+        createSandboxHandlers({ getNodeByIdAsync: lookup } as unknown as typeof figma).get_node!({
+          nodeId: '1:2',
+        }),
+      ).catch(error => error);
+      await vi.runAllTimersAsync();
+      expect(await reading).toMatchObject({ node: { id: '1:2' } });
+      expect(lookup.mock.calls).toEqual([['1:2'], ['1:2']]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it('throws when nodeId is missing or not a string', async () => {
     const handler = createGetNodeHandler(fakeFigma({}));
     await expect(handler(undefined)).rejects.toThrow(/nodeId/);

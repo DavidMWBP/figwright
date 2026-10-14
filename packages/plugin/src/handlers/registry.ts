@@ -1,6 +1,7 @@
-import type { SandboxHandlers } from '../dispatcher.js';
+import type { SandboxHandlers, SandboxToolHandler } from '../dispatcher.js';
 import { createIdempotencyCache, idempotent } from '../idempotency.js';
 import { withInstanceIdLookup } from '../node-lookup.js';
+import type { ReadRetryState } from '../read-retry.js';
 import { createAddComponentPropertyHandler } from './add-component-property.js';
 import { createAddPageHandler } from './add-page.js';
 import { createAddVariableModeHandler } from './add-variable-mode.js';
@@ -123,10 +124,10 @@ import { createUpdateVariableCollectionHandler } from './update-variable-collect
  * Wiring lives here (not in code.ts) so a registry test can enumerate the keys and assert they
  * match the server's advertised tools — a new tool can't be half-wired without a test failing.
  */
-export const createSandboxHandlers = (figmaApi: typeof figma): SandboxHandlers => {
-  const figmaCtx = withInstanceIdLookup(figmaApi);
-  const cache = createIdempotencyCache();
-
+const buildHandlers = (
+  figmaCtx: typeof figma,
+  cache: ReturnType<typeof createIdempotencyCache>,
+): SandboxHandlers => {
   const rawWrites: SandboxHandlers = {
     set_fills: createSetFillsHandler(figmaCtx),
     set_text: createSetTextHandler(figmaCtx),
@@ -258,4 +259,21 @@ export const createSandboxHandlers = (figmaApi: typeof figma): SandboxHandlers =
   handlers.batch = idempotent(cache, createBatchHandler(figmaCtx, rawWrites));
 
   return handlers;
+};
+
+export const createSandboxHandlers = (figmaApi: typeof figma): SandboxHandlers => {
+  const cache = createIdempotencyCache();
+  const fallback = { byIdRejected: false };
+  const makeHandlers = (): SandboxHandlers => {
+    const state: ReadRetryState = { used: 0, enabled: true };
+    return buildHandlers(withInstanceIdLookup(figmaApi, state, fallback), cache);
+  };
+  // Factories bind reads to this invocation's allowance; cache and instance fallback stay session-wide.
+  return Object.fromEntries(
+    Object.keys(makeHandlers()).map(name => [
+      name,
+      (params: unknown, context: Parameters<SandboxToolHandler>[1]) =>
+        makeHandlers()[name]!(params, context),
+    ]),
+  );
 };

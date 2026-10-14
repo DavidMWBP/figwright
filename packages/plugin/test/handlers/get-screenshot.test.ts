@@ -1,7 +1,9 @@
 import type { GetScreenshotResult } from '@figwright/shared';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createGetScreenshotHandler } from '../../src/handlers/get-screenshot.js';
+import { createSandboxHandlers } from '../../src/handlers/registry.js';
+import { CONNECTION_ERROR } from '../read-retry-fake.js';
 
 interface ExportCall {
   format: string;
@@ -30,6 +32,37 @@ const exportable = (id: string, calls: ExportCall[]): BaseNode =>
   }) as unknown as BaseNode;
 
 describe('get_screenshot handler', () => {
+  it.each([undefined, null])(
+    'retries only the failed export for render bounds %s',
+    async bounds => {
+      vi.useFakeTimers();
+      try {
+        const exportAsync = vi
+          .fn<(settings: ExportSettings) => Promise<Uint8Array>>()
+          .mockRejectedValueOnce(CONNECTION_ERROR)
+          .mockResolvedValue(new Uint8Array([7]));
+        const lookup = vi.fn<(id: string) => Promise<BaseNode | null>>().mockResolvedValue({
+          id: '1:2',
+          exportAsync,
+          absoluteRenderBounds: bounds,
+          absoluteBoundingBox: { width: 10, height: 10 },
+        } as unknown as BaseNode);
+        const reading = Promise.resolve(
+          createSandboxHandlers({
+            getNodeByIdAsync: lookup,
+            base64Encode: () => 'image',
+          } as unknown as typeof figma).get_screenshot!({ nodeIds: ['1:2'] }),
+        ).catch(error => error);
+        await vi.runAllTimersAsync();
+        expect(await reading).toMatchObject({ images: [{ nodeId: '1:2', base64: 'image' }] });
+        expect(exportAsync).toHaveBeenCalledTimes(2);
+        expect(exportAsync.mock.calls[1]).toEqual(exportAsync.mock.calls[0]);
+        expect(lookup).toHaveBeenCalledOnce();
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
   it('exports each node to base64 with PNG + scale by default', async () => {
     const calls: ExportCall[] = [];
     const handler = createGetScreenshotHandler(

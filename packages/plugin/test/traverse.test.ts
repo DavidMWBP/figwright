@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { collectMatches, flattenForest, resolveScope, walk } from '../src/traverse.js';
 import { unloadedPage } from './page-fake.js';
+import { CONNECTION_ERROR } from './read-retry-fake.js';
 
 const node = (id: string, type: string, children?: SceneNode[]): SceneNode =>
   ({ id, type, name: id, children }) as unknown as SceneNode;
@@ -161,6 +162,21 @@ const fakeFigma = (opts: {
   }) as unknown as typeof figma;
 
 describe('resolveScope', () => {
+  it('retries a failed page load before accessing children', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = unloadedPage();
+      f.loadAsync.mockRejectedValueOnce(CONNECTION_ERROR);
+      f.finish();
+      const reading = resolveScope(f.figmaCtx, f.page.id).catch(error => error);
+      await vi.runAllTimersAsync();
+      expect(await reading).toEqual(f.children);
+      expect(f.loadAsync).toHaveBeenCalledTimes(2);
+      expect(f.getNodeByIdAsync).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it('resolveScope loads an unloaded page before reading its children', async () => {
     const f = unloadedPage();
     const reading = resolveScope(f.figmaCtx, f.page.id);

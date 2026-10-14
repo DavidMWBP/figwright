@@ -6,6 +6,7 @@ import {
 } from '@figwright/shared';
 
 import type { SandboxToolHandler } from '../dispatcher.js';
+import { retryRead } from '../read-retry.js';
 
 const isFormat = (value: unknown): value is ScreenshotFormat =>
   typeof value === 'string' && (SCREENSHOT_FORMATS as readonly string[]).includes(value);
@@ -186,7 +187,9 @@ export const createGetScreenshotHandler =
           // bounding box, else give up on fitting/reporting and export at 1x like before.
           const box = geom.absoluteRenderBounds ?? geom.absoluteBoundingBox;
           const scale = resolveScale(box, requestedScale, forVision, true, ceiling);
-          const bytes = await node.exportAsync(makeSettings(false, scale));
+          const bytes = await retryRead(figmaCtx, () =>
+            node.exportAsync(makeSettings(false, scale)),
+          );
           const image = exported(nodeId, bytes);
           attachRasterDims(image, box, scale);
           return image;
@@ -202,7 +205,9 @@ export const createGetScreenshotHandler =
           geom.visible !== false && box != null && box.width > 0 && box.height > 0;
         // A blank isn't worth fitting — keep it at 1x unless the caller asked for a scale.
         const scale = resolveScale(box, requestedScale, forVision, recoverable, ceiling);
-        const bytes = await node.exportAsync(makeSettings(recoverable, scale));
+        const bytes = await retryRead(figmaCtx, () =>
+          node.exportAsync(makeSettings(recoverable, scale)),
+        );
         const image = exported(nodeId, bytes);
         if (recoverable) image.recovered = true;
         else image.empty = true;
