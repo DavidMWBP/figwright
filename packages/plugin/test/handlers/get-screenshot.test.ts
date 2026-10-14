@@ -32,6 +32,25 @@ const exportable = (id: string, calls: ExportCall[]): BaseNode =>
   }) as unknown as BaseNode;
 
 describe('get_screenshot handler', () => {
+  it('reports an export that fails twice without a third attempt', async () => {
+    vi.useFakeTimers();
+    try {
+      const exportAsync = vi.fn().mockRejectedValue(CONNECTION_ERROR);
+      const node = { id: '1:2', exportAsync } as unknown as BaseNode;
+      const reading = Promise.resolve(
+        createSandboxHandlers({
+          getNodeByIdAsync: async () => node,
+        } as unknown as typeof figma).get_screenshot!({ nodeIds: ['1:2'] }),
+      ).catch(error => error);
+      await vi.runAllTimersAsync();
+      expect(await reading).toMatchObject({
+        message: `exportAsync(1:2) failed: ${CONNECTION_ERROR} Read failed twice.`,
+      });
+      expect(exportAsync).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it.each([undefined, null])('attributes export rejection for render bounds %s', async bounds => {
     const cause = new Error('unavailable');
     const node = {

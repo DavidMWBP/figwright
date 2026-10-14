@@ -162,6 +162,21 @@ const fakeFigma = (opts: {
   }) as unknown as typeof figma;
 
 describe('resolveScope', () => {
+  it('reports a page load that fails twice without a third attempt', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = unloadedPage();
+      f.loadAsync.mockRejectedValue(CONNECTION_ERROR);
+      const reading = resolveScope(f.figmaCtx, f.page.id).catch(error => error);
+      await vi.runAllTimersAsync();
+      expect((await reading).message).toBe(
+        `PageNode.loadAsync(P:2) failed: ${CONNECTION_ERROR} Read failed twice.`,
+      );
+      expect(f.loadAsync).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it('retries a failed page load before accessing children', async () => {
     vi.useFakeTimers();
     try {

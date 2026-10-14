@@ -5,6 +5,16 @@ import { createSandboxHandlers } from '../src/handlers/registry.js';
 import { withInstanceIdLookup } from '../src/node-lookup.js';
 import { unloadedPage } from './page-fake.js';
 
+it('wraps variable lookup on a frozen host API', async () => {
+  const variable = { id: 'V:2' } as Variable;
+  const variables = Object.freeze({
+    getVariableByIdAsync: vi.fn(async () => variable),
+  });
+  const ctx = withInstanceIdLookup({ variables } as unknown as typeof figma);
+  await expect(ctx.variables.getVariableByIdAsync('V:2')).resolves.toBe(variable);
+  expect(variables.getVariableByIdAsync).toHaveBeenCalledWith('V:2');
+});
+
 it.each(['font', 'variable', 'page'])(
   'attributes the %s API boundary used by all handlers',
   async boundary => {
@@ -163,7 +173,7 @@ describe('lookup rejection context', () => {
     }
   });
 
-  it('treats a probe resolving null as a failed health check', async () => {
+  it('treats a probe resolving null as an answering session', async () => {
     const lookup = vi.fn<(id: string) => Promise<BaseNode | null>>(async id => {
       if (id === '0:1') return null;
       throw new Error('target failed');
@@ -172,7 +182,7 @@ describe('lookup rejection context', () => {
       currentPage: { id: '0:1' },
       getNodeByIdAsync: lookup,
     } as unknown as typeof figma);
-    await expect(ctx.getNodeByIdAsync('8:8')).rejects.toThrow('session is not answering reads');
+    await expect(ctx.getNodeByIdAsync('8:8')).rejects.toThrow('session answered other reads');
     expect(lookup.mock.calls).toEqual([['8:8'], ['0:1']]);
   });
   it.each([true, false])(

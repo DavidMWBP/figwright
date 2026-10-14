@@ -73,7 +73,8 @@ export const withInstanceIdLookup = (
     health ??= (async () => {
       try {
         const page = figmaCtx.currentPage;
-        return (await figmaCtx.getNodeByIdAsync(page.id)) !== null;
+        await figmaCtx.getNodeByIdAsync(page.id);
+        return true;
       } catch {
         return false;
       }
@@ -113,7 +114,7 @@ export const withInstanceIdLookup = (
   const variables =
     figmaCtx.variables === undefined
       ? undefined
-      : new Proxy(figmaCtx.variables, {
+      : new Proxy({} as typeof figmaCtx.variables, {
           get: (_, prop) => {
             if (
               prop === 'getVariableByIdAsync' &&

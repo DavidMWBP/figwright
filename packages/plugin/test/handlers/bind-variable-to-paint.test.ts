@@ -2,6 +2,7 @@ import type { MutateResult } from '@figwright/shared';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createBindVariableToPaintHandler } from '../../src/handlers/bind-variable-to-paint.js';
+import { createSandboxHandlers } from '../../src/handlers/registry.js';
 
 const solid = () => ({ type: 'SOLID', color: { r: 1, g: 1, b: 1 } });
 
@@ -139,7 +140,6 @@ describe('bind_variable_to_paint handler', () => {
     ).rejects.toThrow(/variable .* not found/);
   });
 });
-import { createSandboxHandlers } from '../../src/handlers/registry.js';
 
 it('attributes a failed paint variable lookup', async () => {
   const cause = new Error('unavailable');
