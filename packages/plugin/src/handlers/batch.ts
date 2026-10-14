@@ -1960,14 +1960,14 @@ export const createBatchHandler =
     await refuseEmptiedContainers(figmaCtx, ops);
 
     // Phase 1 — capture (read-only). Reads are independent, so resolve them together. A Figma API
-    // can reject with a bare string (measured: "Unable to establish connection to Figma after 10
-    // seconds"); pass that on as an Error that says nothing was applied yet, rather than raw.
+    // can reject with a bare string or a contextual lookup Error; preserve the message and say
+    // nothing was applied yet.
     let captured: Captured[];
     try {
       captured = await Promise.all(ops.map(async op => captureOp(figmaCtx, op)));
     } catch (err) {
-      if (err instanceof Error) throw err;
-      throw new Error(`batch: capture failed before any op was applied: ${String(err)}`, {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`batch: capture failed before any op was applied: ${message}`, {
         cause: err,
       });
     }
