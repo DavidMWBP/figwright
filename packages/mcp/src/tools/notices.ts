@@ -55,8 +55,11 @@ export const captureNotices = async (
     // turns a thrown error into the tool result the model sees, so the message is where it has to
     // go; `finish` never runs on this path.
     const message = err instanceof Error ? err.message : String(err);
+    // A failing sub-call knows its own session, even if another sub-call answered more recently.
+    const attributed =
+      message.includes('(answered by session ') || message.includes('(no session answered');
     const suffix =
-      (box.answer === null || message.includes(box.answer) ? '' : ` ${box.answer}`) +
+      (box.answer === null || attributed ? '' : ` ${box.answer}`) +
       (box.routing === null ? '' : asRoutingBlock(box.routing)) +
       (box.skew === null ? '' : asBlock(box.skew));
     if (suffix === '') throw err;

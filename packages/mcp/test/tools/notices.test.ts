@@ -1,7 +1,12 @@
 import type { CallToolResult } from '@modelcontextprotocol/server';
 import { describe, expect, it } from 'vitest';
 
-import { captureNotices, reportSkew, withSkewNotice } from '../../src/tools/notices.js';
+import {
+  captureNotices,
+  reportAnswer,
+  reportSkew,
+  withSkewNotice,
+} from '../../src/tools/notices.js';
 
 const result = (text: string): CallToolResult => ({ content: [{ type: 'text', text }] });
 const NOTICE = 'Figwright plugin v0.3.0 is older than this server (v0.4.0).';
@@ -13,6 +18,17 @@ const textOf = (from: CallToolResult, index: number): string => {
 };
 
 describe('captureNotices', () => {
+  it('keeps a failed sub-call attributed to its own session after another reply', async () => {
+    const message = 'unavailable (answered by session session-a, file "Draft A")';
+    const error = await captureNotices(
+      async () => {
+        reportAnswer('(answered by session session-b, file "Draft B")');
+        throw new Error(message);
+      },
+      r => r,
+    ).catch(e => e);
+    expect(error.message).toBe(message);
+  });
   it('scopes a report to the call that caused it', async () => {
     const captured = await captureNotices(
       async () => {
