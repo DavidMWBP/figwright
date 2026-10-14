@@ -26,6 +26,25 @@ const fakeFigma = (lookup: Record<string, BaseNode | null>): typeof figma =>
   }) as unknown as typeof figma;
 
 describe('get_node handler', () => {
+  it('keeps a rejected target as an error and probes again on the next tool call', async () => {
+    const lookup = vi.fn<(id: string) => Promise<BaseNode | null>>(async id => {
+      if (id === '0:1') return { id } as BaseNode;
+      throw new Error('lookup rejected');
+    });
+    const handlers = createSandboxHandlers({
+      currentPage: { id: '0:1' },
+      getNodeByIdAsync: lookup,
+    } as unknown as typeof figma);
+    for (let i = 0; i < 2; i++) {
+      await expect(handlers.get_node!({ nodeId: '8:8' })).rejects.toThrow(
+        'session answered other reads',
+      );
+    }
+    expect(lookup.mock.calls.filter(([id]) => id === '0:1')).toHaveLength(2);
+    await expect(
+      handlers.rename_node!({ nodeId: '8:8', name: 'After', requestId: 'failed-write' }),
+    ).rejects.toThrow('reload is not indicated');
+  });
   it('retries a connection rejection once and returns the node', async () => {
     vi.useFakeTimers();
     try {

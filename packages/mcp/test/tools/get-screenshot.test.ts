@@ -1,9 +1,25 @@
 import type { GetScreenshotResult } from '@figwright/shared';
+import { GetScreenshotResultSchema } from '@figwright/shared';
 import { describe, expect, it } from 'vitest';
 
 import { INLINE_IMAGE_BUDGET_BYTES, screenshotContent } from '../../src/tools/get-screenshot.js';
 
 describe('screenshotContent', () => {
+  it('shows per-id failures alongside successful images', () => {
+    const blocks = screenshotContent(
+      GetScreenshotResultSchema.parse({
+        images: [{ nodeId: '1:1', format: 'PNG', base64: 'AAAA' }],
+        lookupErrors: [
+          { index: 1, nodeId: '8:8', message: 'target failed; session answered other reads' },
+        ],
+      }),
+    );
+    expect(blocks).toContainEqual({ type: 'image', data: 'AAAA', mimeType: 'image/png' });
+    expect(blocks).toContainEqual({
+      type: 'text',
+      text: expect.stringMatching(/8:8.*index 1.*session answered other reads/),
+    });
+  });
   it('emits a label + image block for raster formats with the right mime type', () => {
     const result: GetScreenshotResult = {
       images: [

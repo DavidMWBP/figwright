@@ -70,7 +70,18 @@ export const ScreenshotImageSchema = z.object({
 });
 export type ScreenshotImage = z.infer<typeof ScreenshotImageSchema>;
 
-export const GetScreenshotResultSchema = z.object({ images: z.array(ScreenshotImageSchema) });
+// Failed lookup occurrences use input indexes; they are omitted from images/saved rather than
+// confused with a resolved null (which keeps its non-exportable entry).
+const LookupErrorsSchema = z
+  .array(
+    z.object({ index: z.number().int().nonnegative(), nodeId: z.string(), message: z.string() }),
+  )
+  .optional();
+
+export const GetScreenshotResultSchema = z.object({
+  images: z.array(ScreenshotImageSchema),
+  lookupErrors: LookupErrorsSchema,
+});
 export type GetScreenshotResult = z.infer<typeof GetScreenshotResultSchema>;
 
 // ── save_screenshots ───────────────────────────────────────────────────────
@@ -88,7 +99,10 @@ export const SavedScreenshotSchema = z.object({
 });
 export type SavedScreenshot = z.infer<typeof SavedScreenshotSchema>;
 
-export const SaveScreenshotsResultSchema = z.object({ saved: z.array(SavedScreenshotSchema) });
+export const SaveScreenshotsResultSchema = z.object({
+  saved: z.array(SavedScreenshotSchema),
+  lookupErrors: LookupErrorsSchema,
+});
 export type SaveScreenshotsResult = z.infer<typeof SaveScreenshotsResultSchema>;
 
 // ── export_pdf ───────────────────────────────────────────────────────────────

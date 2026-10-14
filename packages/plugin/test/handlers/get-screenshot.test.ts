@@ -32,6 +32,33 @@ const exportable = (id: string, calls: ExportCall[]): BaseNode =>
   }) as unknown as BaseNode;
 
 describe('get_screenshot handler', () => {
+  it.each([['1:1', '8:8'], ['8:8', '8:9'], ['8:8', '1:1', '8:8'], ['1:1', '1:1'], ['9:9']])(
+    'preserves successful images and each failed occurrence: %j',
+    async (...nodeIds) => {
+      const lookup = vi.fn<(id: string) => Promise<BaseNode | null>>(async id => {
+        if (id === '0:1') return { id } as BaseNode;
+        if (id === '9:9') return null;
+        if (id.startsWith('8:')) throw new Error('target rejected');
+        return exportable(id, []);
+      });
+      const result = (await createSandboxHandlers({
+        currentPage: { id: '0:1' },
+        getNodeByIdAsync: lookup,
+        base64Encode: () => 'image',
+      } as unknown as typeof figma).get_screenshot!({ nodeIds })) as GetScreenshotResult;
+      expect(result.images).toEqual(
+        nodeIds
+          .filter(id => !id.startsWith('8:'))
+          .map(nodeId => ({ nodeId, format: 'PNG', base64: nodeId === '9:9' ? null : 'image' })),
+      );
+      const message = expect.stringContaining('session answered other reads');
+      const errors = nodeIds.flatMap((nodeId, index) =>
+        nodeId.startsWith('8:') ? [{ index, nodeId, message }] : [],
+      );
+      expect(result.lookupErrors ?? []).toEqual(errors);
+      expect(lookup.mock.calls.filter(([id]) => id === '0:1')).toHaveLength(errors.length ? 1 : 0);
+    },
+  );
   it.each([undefined, null])(
     'retries only the failed export for render bounds %s',
     async bounds => {
