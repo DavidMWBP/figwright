@@ -83,8 +83,11 @@ hardcode width/height), and real fonts (a new TEXT node defaults to Inter). →
 When the source carries animation — CSS `@keyframes` / `transition`, Framer Motion, GSAP, a Vue/Svelte
 transition — author it as Figma **Motion (beta)** on the frame you built rather than dropping it:
 `apply_animation_style` (presets from `get_motion_styles`) or `apply_manual_keyframe_track` per
-property, `set_timeline_duration` for length. A staggered row is **one atomic `batch`** of
-`apply_animation_style` ops with increasing `config.timelineOffset` — not N calls. Motion is
+property, `set_timeline_duration` for length. A staggered row is **one `batch` with rollback** of
+`apply_animation_style` ops with increasing `config.timelineOffset` — not N calls. All-or-nothing
+holds when the call answers, except for reported undo failures or residue. A stop for time rolls
+back applied ops and reports how it went; an unknown-outcome timeout names the last completed
+indexes. Read back the targets before any retry. Motion is
 Figma-Design-only and keyframes attach to a top-level frame's layers, so build the frame first.
 → **[`references/motion.md`](./references/motion.md).**
 

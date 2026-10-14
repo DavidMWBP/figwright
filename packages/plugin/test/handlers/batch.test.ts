@@ -101,6 +101,173 @@ const realWrites = (figmaCtx: typeof figma): SandboxHandlers => ({
 
 const SOLID = (r: number): unknown => ({ type: 'SOLID', color: { r, g: 0, b: 0 } });
 
+describe('batch deadlines', () => {
+  it.each([1, 12, 48])(
+    'preserves successful results for %i ops within the deadline',
+    async count => {
+      vi.useFakeTimers();
+      vi.setSystemTime(0);
+      try {
+        const { figmaCtx, store } = makeFigma({ '1:1': { id: '1:1', name: 'before' } });
+        const result = await createBatchHandler(
+          figmaCtx,
+          realWrites(figmaCtx),
+        )({
+          ops: Array.from({ length: count }, (_, i) => ({
+            tool: 'rename_node',
+            params: { nodeId: '1:1', name: `after-${i}` },
+          })),
+        });
+        expect(result).toEqual({
+          ok: true,
+          results: Array.from({ length: count }, () => ({ ok: true, nodeId: '1:1' })),
+        });
+        expect(store.get('1:1')!.name).toBe(`after-${count - 1}`);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+  it('stops before the next op and rolls back when the batch deadline is reached', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    try {
+      const undone: string[] = [];
+      const initial = Object.fromEntries(
+        ['1:1', '1:2', '1:3'].map(id => {
+          let name = 'before';
+          return [
+            id,
+            {
+              id,
+              get name() {
+                return name;
+              },
+              set name(value: string) {
+                name = value;
+                if (value === 'before') undone.push(id);
+              },
+            },
+          ];
+        }),
+      );
+      const { figmaCtx, store } = makeFigma(initial);
+      let finish: (() => void) | undefined;
+      let markStarted!: () => void;
+      const started = new Promise<void>(resolve => {
+        markStarted = resolve;
+      });
+      const calls: string[] = [];
+      const handler = createBatchHandler(figmaCtx, {
+        rename_node: async params => {
+          const p = params as { nodeId: string; name: string };
+          calls.push(p.nodeId);
+          store.get(p.nodeId)!.name = p.name;
+          if (calls.length === 2) {
+            await new Promise<void>(resolve => {
+              finish = resolve;
+              markStarted();
+            });
+          }
+          return { ok: true };
+        },
+      });
+      const answer = handler({
+        ops: ['1:1', '1:2', '1:3'].map(nodeId => ({
+          tool: 'rename_node',
+          params: { nodeId, name: 'after' },
+        })),
+      }) as Promise<unknown>;
+      const outcome = answer.catch(error => error as Error);
+      await started;
+      vi.setSystemTime(90_001); // 150s budget less the 60s rollback reserve.
+      expect(undone).toEqual([]); // Never undo while the second apply is pending.
+      finish!();
+      expect(await outcome).toMatchObject({
+        message: expect.stringMatching(
+          /stopped for time after op 1.*rolled back 2 applied op\(s\)/,
+        ),
+      });
+      expect(calls).toEqual(['1:1', '1:2']);
+      expect(undone).toEqual(['1:2', '1:1']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([1, 12, 48])(
+    'stops before op 0 with %i ops when capture consumes the window',
+    async count => {
+      vi.useFakeTimers();
+      vi.setSystemTime(0);
+      try {
+        const { figmaCtx } = makeFigma({ '1:1': { id: '1:1', name: 'before' } });
+        const lookup = figmaCtx.getNodeByIdAsync.bind(figmaCtx);
+        figmaCtx.getNodeByIdAsync = async id => {
+          vi.setSystemTime(count === 1 ? 70_001 : count === 12 ? 180_001 : 540_001);
+          return lookup(id);
+        };
+        const apply = vi.fn<() => { ok: boolean }>(() => ({ ok: true }));
+        await expect(
+          createBatchHandler(figmaCtx, { rename_node: apply })({
+            ops: Array.from({ length: count }, () => ({
+              tool: 'rename_node',
+              params: { nodeId: '1:1', name: 'after' },
+            })),
+          }),
+        ).rejects.toThrow(/stopped for time before op 0.*nothing was applied/);
+        expect(apply).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it('reports failed undos and continues rollback after the reserve is exhausted', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    try {
+      let name = 'before';
+      const { figmaCtx, store } = makeFigma({
+        '1:1': { id: '1:1', name: 'before' },
+        '1:2': {
+          id: '1:2',
+          get name() {
+            return name;
+          },
+          set name(value: string) {
+            if (value === 'before') {
+              vi.setSystemTime(200_000);
+              throw new Error('undo blocked');
+            }
+            name = value;
+          },
+        },
+      });
+      let applied = 0;
+      const handler = createBatchHandler(figmaCtx, {
+        rename_node: params => {
+          const p = params as { nodeId: string; name: string };
+          store.get(p.nodeId)!.name = p.name;
+          if (++applied === 2) vi.setSystemTime(90_001);
+          return { ok: true };
+        },
+      });
+      await expect(
+        handler({
+          ops: ['1:1', '1:2', '1:1'].map(nodeId => ({
+            tool: 'rename_node',
+            params: { nodeId, name: 'after' },
+          })),
+        }),
+      ).rejects.toThrow(/stopped for time after op 1.*1 undo\(s\) FAILED.*op 1.*undo blocked/);
+      expect(store.get('1:1')!.name).toBe('before');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 type Fn = (...args: never[]) => unknown;
 type Run = Record<string, unknown>;
 

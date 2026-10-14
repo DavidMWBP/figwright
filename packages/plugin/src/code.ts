@@ -59,6 +59,10 @@ figma.ui.onmessage = (raw: unknown) => {
       handlers,
       editorType: figma.editorType,
       log,
+      progress: message => {
+        // eslint-disable-next-line unicorn/require-post-message-target-origin
+        figma.ui.postMessage(message);
+      },
     });
     if (outcome.kind === 'reply') {
       // figma.ui.postMessage is the Figma plugin API — there is no targetOrigin parameter

@@ -468,7 +468,8 @@ export class RelayClient {
       const message = err instanceof Error ? err.message : String(err);
       // The sandbox's own code when it answered tool-error (METHOD_NOT_FOUND on a tool an older
       // plugin predates is the one that matters most); Internal only for a failure from this side,
-      // such as the bridge timing out. Hardcoding Internal here used to discard the real code while
+      // such as a non-batch bridge timeout. Batch timeouts carry TIMEOUT and unknown-outcome progress.
+      // Hardcoding Internal here used to discard the real code while
       // the message still spelled it out, which is how the server ended up prefixing it twice.
       const code = err instanceof PluginToolFailure ? err.code : ErrorCode.Internal;
       this.opts.log(`[relay-client] tool handler threw for ${method}: ${message}`);

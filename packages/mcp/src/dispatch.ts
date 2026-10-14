@@ -94,7 +94,7 @@ export const dispatchTool = async (
           const result = await leader.relay.sendRequest(
             toolName,
             args,
-            opts.perCallTimeoutMs ?? getRelayBudget(toolName),
+            opts.perCallTimeoutMs ?? getRelayBudget(toolName, args),
             opts.sessionId,
             served => reportSkew(leader.relay.skewNotice(served)),
           );
@@ -112,7 +112,7 @@ export const dispatchTool = async (
         args,
         undefined,
         opts.sessionId,
-        opts.perCallTimeoutMs ?? getFollowerBudget(toolName),
+        opts.perCallTimeoutMs ?? getFollowerBudget(toolName, args),
         conflicted.signal,
       );
       if (resp.kind === 'ok') {

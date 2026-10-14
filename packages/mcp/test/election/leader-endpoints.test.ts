@@ -17,7 +17,7 @@ import {
   SystemMethod,
 } from '@figwright/shared';
 import { decode, encode } from '@msgpack/msgpack';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket } from 'ws';
 
 import {
@@ -53,7 +53,7 @@ afterEach(async () => {
 });
 
 const startLeader = async (
-  rpcTimeoutMs = 5_000,
+  rpcTimeoutMs: number | null = 5_000,
   extraDeps: Partial<LeaderEndpointDeps> = {},
 ): Promise<Bound> => {
   const http = createServer();
@@ -63,7 +63,7 @@ const startLeader = async (
   const detach = attachLeaderEndpoints(http, {
     relay,
     serverVersion: '1.0.0',
-    rpcTimeoutMs,
+    ...(rpcTimeoutMs === null ? {} : { rpcTimeoutMs }),
     ...extraDeps,
   });
   const b: Bound = { http, relay, port, detach, plugins: [] };
@@ -141,6 +141,28 @@ const callRpc = async (port: number, req: RpcRequest): Promise<RpcResponse> => {
 };
 
 describe('leader endpoints', () => {
+  it('uses the op-count relay budget for forwarded calls and preserves overrides', async () => {
+    for (const override of [undefined, 17]) {
+      const b = await startLeader(override ?? null);
+      const send = vi.spyOn(b.relay, 'sendRequest').mockResolvedValue({ ok: true });
+      const args = {
+        ops: Array.from({ length: 12 }, () => ({
+          tool: 'rename_node',
+          params: { nodeId: '1:1', name: 'sample' },
+        })),
+      };
+      expect(await callRpc(b.port, { toolName: 'batch', args, requestId: 'r' })).toMatchObject({
+        kind: 'ok',
+      });
+      expect(send).toHaveBeenCalledWith(
+        'batch',
+        args,
+        override ?? 245_000,
+        undefined,
+        expect.any(Function),
+      );
+    }
+  });
   it('GET /ping returns server info and plugin count', async () => {
     const b = await startLeader();
     const res = await fetch(`http://127.0.0.1:${b.port}${PING_PATH}`);

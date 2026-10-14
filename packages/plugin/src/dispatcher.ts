@@ -4,12 +4,18 @@ import {
   createToolError,
   createToolResult,
   isPluginBridgeMessage,
+  PLUGIN_BRIDGE_TAG,
+  type BatchProgress,
+  type PluginToolProgress,
   type PluginToolError,
   type PluginToolResult,
 } from '../protocol/bridge.js';
 import { withEditorContext } from '../protocol/editor-context.js';
 
-export type SandboxToolHandler = (params: unknown) => unknown | Promise<unknown>;
+export type SandboxToolHandler = (
+  params: unknown,
+  context?: { progress: (state: BatchProgress) => void },
+) => unknown | Promise<unknown>;
 export type SandboxHandlers = Record<string, SandboxToolHandler>;
 
 export interface DispatchInput {
@@ -22,6 +28,7 @@ export interface DispatchInput {
    */
   editorType: string;
   log?: (msg: string) => void;
+  progress?: (message: PluginToolProgress) => void;
 }
 
 export type DispatchOutcome =
@@ -49,7 +56,10 @@ export const dispatchSandboxMessage = async (input: DispatchInput): Promise<Disp
   }
 
   try {
-    const result = await handler(params);
+    const result = await handler(params, {
+      progress: state =>
+        input.progress?.({ tag: PLUGIN_BRIDGE_TAG, kind: 'tool-progress', id, ...state }),
+    });
     return { kind: 'reply', reply: createToolResult({ id, result }) };
   } catch (err) {
     const raised = err instanceof Error ? err.message : String(err);
