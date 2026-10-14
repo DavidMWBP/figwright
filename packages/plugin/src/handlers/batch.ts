@@ -47,8 +47,9 @@ import { readFlows, sameFlows } from './update-flows.js';
 /**
  * Batch with rollback: all-or-nothing when the call answers, except for reported undo failures or
  * residue. A stop for time rolls back applied ops and reports how it went. A bridge timeout names
- * the last reported completed indexes and an unknown outcome; read back before retrying. Two phases
- * —
+ * the last reported completed indexes and an unknown outcome; read back before retrying.
+ *
+ * Two phases — capture and apply:
  *
  * 1. Capture (read-only): resolve every op's target and snapshot what undo needs. Any failure here
  *    aborts before a single mutation, so a bad op id never leaves the document half-changed.
