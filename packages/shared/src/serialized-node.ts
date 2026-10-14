@@ -755,6 +755,11 @@ export type GetNodeResult = z.infer<typeof GetNodeResultSchema>;
 
 export const GetNodesInfoResultSchema = z.object({
   nodes: z.array(SerializedNodeSchema.nullable()),
+  lookupErrors: z
+    .array(
+      z.object({ index: z.number().int().nonnegative(), nodeId: z.string(), message: z.string() }),
+    )
+    .optional(),
 });
 export type GetNodesInfoResult = z.infer<typeof GetNodesInfoResultSchema>;
 

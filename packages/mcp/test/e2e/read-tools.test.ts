@@ -115,11 +115,12 @@ describe('e2e get_node', () => {
 });
 
 describe('e2e get_nodes_info', () => {
-  it('round-trips an array preserving order with null slots', async () => {
+  it('round-trips an array preserving order with null slots and lookup errors', async () => {
     const h = await startLeader();
     harnesses.push(h);
     const response: GetNodesInfoResult = {
       nodes: [mockNode('1:2'), null, mockNode('1:4')],
+      lookupErrors: [{ index: 1, nodeId: '1:3', message: 'getNodeByIdAsync(1:3) failed' }],
     };
     sockets.push(
       await connectFakePlugin({
@@ -136,6 +137,7 @@ describe('e2e get_nodes_info', () => {
     expect(result.nodes[0]?.id).toBe('1:2');
     expect(result.nodes[1]).toBeNull();
     expect(result.nodes[2]?.id).toBe('1:4');
+    expect(result.lookupErrors).toEqual(response.lookupErrors);
   });
 });
 

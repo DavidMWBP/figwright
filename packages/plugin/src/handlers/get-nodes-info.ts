@@ -17,13 +17,22 @@ export const createGetNodesInfoHandler =
     // One allowance for every tree: they come back in one result, so it is their sum that has to
     // fit — and that the sandbox has to hold at once.
     const budget = resultCharBudget();
+    const failures: Array<{ index: number; nodeId: string; error: unknown }> = [];
     const runs = await Promise.all(
-      ids.map(async id => {
-        const node = await figmaCtx.getNodeByIdAsync(id);
+      ids.map(async (id, index) => {
+        let node: BaseNode | null;
+        try {
+          node = await figmaCtx.getNodeByIdAsync(id);
+        } catch (error) {
+          failures.push({ index, nodeId: id, error });
+          return null;
+        }
         if (node === null || !isSceneNode(node)) return null;
         return { id, run: await serializeTrees([node], budget) };
       }),
     );
+    failures.sort((a, b) => a.index - b.index);
+    if (ids.length > 0 && failures.length === ids.length) throw failures[0]!.error;
     if (runs.some(entry => entry !== null && !entry.run.complete)) {
       const sizes = runs
         .filter(entry => entry !== null)
@@ -40,5 +49,12 @@ export const createGetNodesInfoHandler =
       entry === null ? null : entry.run.nodes[0]!,
     );
     const result: GetNodesInfoResult = { nodes };
+    if (failures.length > 0) {
+      result.lookupErrors = failures.map(({ index, nodeId, error }) => ({
+        index,
+        nodeId,
+        message: error instanceof Error ? error.message : String(error),
+      }));
+    }
     return result;
   };

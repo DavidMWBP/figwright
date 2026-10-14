@@ -84,15 +84,30 @@ describe('a healthy by-id lookup is used as is', () => {
     expect(lookups).toEqual(['I2:6;3:1;3:2', 'I2:6;9:9']);
   });
 
-  it('passes a plain id, and its rejection, through unchanged', async () => {
+  it('passes a plain id and null through unchanged', async () => {
     const { figmaCtx, lookups } = fakeFigma('rejects-instance-ids');
     const ctx = withInstanceIdLookup(figmaCtx);
     expect(await ctx.getNodeByIdAsync('999:999')).toBeNull();
+    expect(await ctx.getNodeByIdAsync('1:3')).toBe(await figmaCtx.getNodeByIdAsync('1:3'));
     const rejecting = withInstanceIdLookup({
       getNodeByIdAsync: async () => Promise.reject(new Error('plain lookup failed')),
     } as unknown as typeof figma);
     await expect(rejecting.getNodeByIdAsync('1:3')).rejects.toThrow('plain lookup failed');
-    expect(lookups).toEqual(['999:999']);
+    expect(lookups).toEqual(['999:999', '1:3', '1:3']);
+  });
+});
+
+describe('lookup rejection context', () => {
+  it.each(['8:8', 'I8:8;8:9'])('names the failing plain or root lookup for %s', async id => {
+    const ctx = withInstanceIdLookup({
+      getNodeByIdAsync: async () => Promise.reject(BY_ID_TIMEOUT),
+    } as unknown as typeof figma);
+    const failure = ctx.getNodeByIdAsync(id);
+    await expect(failure).rejects.toBeInstanceOf(Error);
+    await expect(failure).rejects.toMatchObject({ cause: BY_ID_TIMEOUT });
+    await expect(failure).rejects.toThrow('getNodeByIdAsync(8:8)');
+    await expect(failure).rejects.toThrow(BY_ID_TIMEOUT);
+    await expect(failure).rejects.toThrow(/id may not exist.*other reads may still work/);
   });
 });
 
