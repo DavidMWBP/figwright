@@ -115,13 +115,82 @@ describe('a healthy by-id lookup is used as is', () => {
 });
 
 describe('lookup rejection context', () => {
+  it('probes only after the target retry is exhausted, without retrying a failed probe', async () => {
+    vi.useFakeTimers();
+    try {
+      const lookup = vi
+        .fn<(id: string) => Promise<BaseNode | null>>()
+        .mockRejectedValue(BY_ID_TIMEOUT);
+      const reading = withInstanceIdLookup({
+        currentPage: { id: '0:1' },
+        getNodeByIdAsync: lookup,
+      } as unknown as typeof figma)
+        .getNodeByIdAsync('8:8')
+        .catch(error => error);
+      await vi.runAllTimersAsync();
+      expect((await reading).message).toContain('Reload the plugin');
+      expect(lookup.mock.calls).toEqual([['8:8'], ['8:8'], ['0:1']]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('treats a probe resolving null as a failed health check', async () => {
+    const lookup = vi.fn<(id: string) => Promise<BaseNode | null>>(async id => {
+      if (id === '0:1') return null;
+      throw new Error('target failed');
+    });
+    const ctx = withInstanceIdLookup({
+      currentPage: { id: '0:1' },
+      getNodeByIdAsync: lookup,
+    } as unknown as typeof figma);
+    await expect(ctx.getNodeByIdAsync('8:8')).rejects.toThrow('session is not answering reads');
+    expect(lookup.mock.calls).toEqual([['8:8'], ['0:1']]);
+  });
+  it.each([true, false])(
+    'probes a loaded page once and attributes failures (healthy=%s)',
+    async healthy => {
+      const lookup = vi.fn<(id: string) => Promise<BaseNode | null>>(async id => {
+        if (id === '0:1') {
+          if (healthy) return { id } as BaseNode;
+          throw new Error('probe failed');
+        }
+        throw new Error('target failed');
+      });
+      const ctx = withInstanceIdLookup({
+        currentPage: { id: '0:1' },
+        getNodeByIdAsync: lookup,
+      } as unknown as typeof figma);
+      const errors = await Promise.all(
+        ['8:8', '8:9'].map(id => ctx.getNodeByIdAsync(id).catch(error => error)),
+      );
+      for (const error of errors) {
+        expect(error.message).toContain(
+          healthy ? 'session answered other reads' : 'session is not answering reads',
+        );
+        expect(error.message).toContain(healthy ? 'reload is not indicated' : 'Reload the plugin');
+        expect(error.cause.message).toBe('target failed');
+        expect(error.message).toMatch(
+          healthy
+            ? /missing.*deleted.*page not loaded.*not yet synced/
+            : /session is not answering reads/,
+        );
+        expect(error.message).toMatch(healthy ? /exporting.*parent/ : /Reload the plugin/);
+        expect(error.message.includes('Reload the plugin')).toBe(!healthy);
+      }
+      expect(lookup.mock.calls.filter(([id]) => id === '0:1')).toHaveLength(1);
+    },
+  );
+
+  it('does not probe a resolved null', async () => {
+    const lookup = vi.fn<() => Promise<null>>(async () => null);
+    const ctx = withInstanceIdLookup({ getNodeByIdAsync: lookup } as unknown as typeof figma);
+    expect(await ctx.getNodeByIdAsync('8:8')).toBeNull();
+    expect(lookup).toHaveBeenCalledExactlyOnceWith('8:8');
+  });
   it.each([
     [BY_ID_TIMEOUT, 2, /failed twice/],
-    [
-      new TypeError('other failure'),
-      1,
-      /^getNodeByIdAsync\(8:8\) failed: other failure The id may not exist; other reads may still work\.$/,
-    ],
+    [new TypeError('other failure'), 1, /failed: other failure.*session is not answering reads/],
     [new TypeError(BY_ID_TIMEOUT), 1, /failed: Unable to establish/],
     ['Unable to establish connection to Figma after 10 seconds', 1, /failed: Unable to establish/],
   ])('bounds attempts and preserves other rejections: %s', async (cause, attempts, message) => {
@@ -155,7 +224,7 @@ describe('lookup rejection context', () => {
       await expect(failure).rejects.toMatchObject({ cause: { cause: BY_ID_TIMEOUT } });
       await expect(failure).rejects.toThrow('getNodeByIdAsync(8:8)');
       await expect(failure).rejects.toThrow(BY_ID_TIMEOUT);
-      await expect(failure).rejects.toThrow(/id may not exist.*other reads may still work/);
+      await expect(failure).rejects.toThrow(/session is not answering reads.*Reload the plugin/);
     } finally {
       vi.useRealTimers();
     }

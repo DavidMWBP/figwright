@@ -7,6 +7,7 @@ import type {
   SaveScreenshotsResult,
   ScreenshotImage,
 } from '@figwright/shared';
+import { SaveScreenshotsResultSchema } from '@figwright/shared';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
@@ -21,6 +22,18 @@ import { toToolDefinition } from '../tool-schema.js';
 const saveScreenshotsToolDefinition = toToolDefinition(saveScreenshotsTool);
 
 const emptyDispatch: ToolDispatcher = async () => ({ images: [] }) satisfies GetScreenshotResult;
+
+it('saves successful images and preserves per-id lookup errors', async () => {
+  const outDir = await makeDir();
+  const lookupErrors = [{ index: 1, nodeId: '8:8', message: 'session answered other reads' }];
+  const result = await handleSaveScreenshots(
+    async () => ({ images: [{ nodeId: '1:1', format: 'PNG', base64: 'AQID' }], lookupErrors }),
+    { nodeIds: ['1:1', '8:8'], outDir },
+  );
+  expect(SaveScreenshotsResultSchema.parse(result).lookupErrors).toEqual(lookupErrors);
+  expect(result.saved).toHaveLength(1);
+  expect(await readFile(result.saved[0]!.path!)).toEqual(Buffer.from([1, 2, 3]));
+});
 
 const dirs: string[] = [];
 const makeDir = async (): Promise<string> => {

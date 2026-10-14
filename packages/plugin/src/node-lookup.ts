@@ -8,15 +8,16 @@ const lookup = async (
   figmaCtx: typeof figma,
   id: string,
   retryCtx: typeof figma,
+  probe: () => Promise<boolean>,
 ): Promise<BaseNode | null> => {
   try {
     return await retryRead(retryCtx, () => figmaCtx.getNodeByIdAsync(id));
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : String(cause);
-    throw new Error(
-      `getNodeByIdAsync(${id}) failed: ${message} The id may not exist; other reads may still work.`,
-      { cause },
-    );
+    const advice = (await probe())
+      ? 'The target lookup failed while the session answered other reads. The id may be missing, deleted, on a page not loaded, or not yet synced from another client. A plugin reload is not indicated; try exporting the node or reading its parent.'
+      : 'The session is not answering reads: the loaded-page health probe failed too. Reload the plugin to restore reads.';
+    throw new Error(`getNodeByIdAsync(${id}) failed: ${message} ${advice}`, { cause });
   }
 };
 
@@ -26,8 +27,9 @@ const walkFromInstanceRoot = async (
   root: string,
   id: string,
   retryCtx: typeof figma,
+  probe: () => Promise<boolean>,
 ): Promise<BaseNode | null> => {
-  const instance = await lookup(figmaCtx, root, retryCtx);
+  const instance = await lookup(figmaCtx, root, retryCtx, probe);
   if (instance === null || !('findOne' in instance)) return null;
   // With skipInvisibleInstanceChildren on, a hidden sublayer is skipped here just as Figma's own
   // lookup returns null for it.
@@ -59,15 +61,29 @@ export const withInstanceIdLookup = (
   retryState: ReadRetryState = { used: 0, enabled: true },
   fallback = { byIdRejected: false },
 ): typeof figma => {
+  // The registry creates this proxy per tool invocation. Cache the promise before awaiting it so
+  // concurrent failed ids share one raw read, without spending or repeating the retry allowance.
+  let health: Promise<boolean> | undefined;
+  const probe = (): Promise<boolean> => {
+    health ??= (async () => {
+      try {
+        const page = figmaCtx.currentPage;
+        return (await figmaCtx.getNodeByIdAsync(page.id)) !== null;
+      } catch {
+        return false;
+      }
+    })();
+    return health;
+  };
   const getNodeByIdAsync = async (id: string): Promise<BaseNode | null> => {
     const root = INSTANCE_QUALIFIED.exec(id)?.[1];
-    if (root === undefined) return lookup(figmaCtx, id, proxy);
-    if (fallback.byIdRejected) return walkFromInstanceRoot(figmaCtx, root, id, proxy);
+    if (root === undefined) return lookup(figmaCtx, id, proxy, probe);
+    if (fallback.byIdRejected) return walkFromInstanceRoot(figmaCtx, root, id, proxy, probe);
     try {
       return await figmaCtx.getNodeByIdAsync(id);
     } catch {
       fallback.byIdRejected = true;
-      return walkFromInstanceRoot(figmaCtx, root, id, proxy);
+      return walkFromInstanceRoot(figmaCtx, root, id, proxy, probe);
     }
   };
   const proxy = new Proxy({} as typeof figma, {

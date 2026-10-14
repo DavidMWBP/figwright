@@ -171,9 +171,20 @@ export const createGetScreenshotHandler =
     // oversized ones. Disk exports aren't sent to a provider, so they keep the full ceiling.
     const ceiling =
       forVision && ids.length > MANY_IMAGE_THRESHOLD ? MANY_IMAGE_LONG_EDGE : VISION_LONG_EDGE;
-    const images: ScreenshotImage[] = await Promise.all(
-      ids.map(async (nodeId): Promise<ScreenshotImage> => {
-        const node = await figmaCtx.getNodeByIdAsync(nodeId);
+    const lookupErrors: NonNullable<GetScreenshotResult['lookupErrors']> = [];
+    const slots = await Promise.all(
+      ids.map(async (nodeId, index): Promise<ScreenshotImage | null> => {
+        let node: BaseNode | null;
+        try {
+          node = await figmaCtx.getNodeByIdAsync(nodeId);
+        } catch (cause) {
+          lookupErrors.push({
+            index,
+            nodeId,
+            message: cause instanceof Error ? cause.message : String(cause),
+          });
+          return null;
+        }
         if (node === null || !isExportable(node)) return { nodeId, format, base64: null };
 
         const geom = node as unknown as ClipGeometry;
@@ -216,6 +227,8 @@ export const createGetScreenshotHandler =
       }),
     );
 
-    const result: GetScreenshotResult = { images };
+    const result: GetScreenshotResult = { images: slots.filter(image => image !== null) };
+    if (lookupErrors.length > 0)
+      result.lookupErrors = lookupErrors.toSorted((a, b) => a.index - b.index);
     return result;
   };

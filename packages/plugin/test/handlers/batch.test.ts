@@ -109,7 +109,12 @@ it.each([
         vi.setSystemTime(59_750); // One-op stop is 70s: 250ms pause plus the platform's 10s cannot fit.
         return failingRead();
       });
-    Object.assign(figmaCtx, { getNodeByIdAsync: lookup });
+    const page = { id: '0:1' };
+    const probe = vi.fn<() => Promise<unknown>>(async () => page);
+    Object.assign(figmaCtx, {
+      currentPage: page,
+      getNodeByIdAsync: (id: string) => (id === page.id ? probe() : lookup(id)),
+    });
     const handler = createSandboxHandlers(figmaCtx).batch!;
     const ops = [{ tool: 'rename_node', params: { nodeId: '1:1', name: 'After' } }];
     if (phase === 'rollback')
@@ -133,6 +138,7 @@ it.each([
     expect(result).toMatchObject(outcome);
     expect(store.get('1:1')!.name).toBe(name);
     expect(failingRead).toHaveBeenCalledTimes(failedReads);
+    expect(probe).toHaveBeenCalledTimes(phase === 'capture' ? 0 : 1);
   } finally {
     vi.useRealTimers();
   }
