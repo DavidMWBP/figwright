@@ -46,6 +46,7 @@ export const dispatchTool = async (
   const log = ctx.log ?? ((): void => {});
 
   let lastError: Error | null = null;
+  let replyReceived = false;
 
   // The election can declare the port wedged *while this call is in flight*, and that verdict has
   // to reach a call that is already blocked — not just the next one. Two halves: the signal cuts
@@ -76,6 +77,7 @@ export const dispatchTool = async (
       // conflict is over has already been decided one line up, by the role, which is the fact —
       // the signal is only how the previous attempt was interrupted.
       conflicted = new AbortController();
+      replyReceived = false;
 
       if (ctx.node.isLeader()) {
         const leader = ctx.node.getLeader();
@@ -97,6 +99,7 @@ export const dispatchTool = async (
             opts.perCallTimeoutMs ?? getRelayBudget(toolName, args),
             opts.sessionId,
             (served, attribution) => {
+              replyReceived = served !== undefined || attribution != null;
               reportSkew(leader.relay.skewNotice(served));
               reportAnswer(attribution ?? null);
             },
@@ -118,6 +121,8 @@ export const dispatchTool = async (
         opts.perCallTimeoutMs ?? getFollowerBudget(toolName, args),
         conflicted.signal,
       );
+      // sendRpc synthesizes this prefix only when its fetch failed before a leader replied.
+      replyReceived = resp.kind === 'ok' || !resp.message.startsWith('follower rpc transport:');
       reportAnswer(resp.attribution ?? null);
       if (resp.kind === 'ok') {
         reportSkew(resp.notice ?? null);
@@ -150,6 +155,7 @@ export const dispatchTool = async (
   } catch (cause) {
     const error = cause instanceof Error ? cause : new Error(String(cause), { cause });
     if (
+      !replyReceived &&
       !error.message.includes('(answered by session ') &&
       !error.message.includes('(no session answered')
     ) {
