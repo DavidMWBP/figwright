@@ -139,3 +139,20 @@ describe('bind_variable_to_paint handler', () => {
     ).rejects.toThrow(/variable .* not found/);
   });
 });
+import { createSandboxHandlers } from '../../src/handlers/registry.js';
+
+it('attributes a failed paint variable lookup', async () => {
+  const cause = new Error('unavailable');
+  const handlers = createSandboxHandlers({
+    getNodeByIdAsync: async () => ({ id: '1:2', fills: [] }),
+    variables: {
+      getVariableByIdAsync: async () => {
+        throw cause;
+      },
+    },
+  } as unknown as typeof figma);
+  const error = await Promise.resolve(
+    handlers.bind_variable_to_paint!({ nodeId: '1:2', variableId: 'V:2' }),
+  ).catch(e => e);
+  expect(error).toMatchObject({ message: 'getVariableByIdAsync(V:2) failed: unavailable', cause });
+});

@@ -1,3 +1,4 @@
+import { figmaCall } from './figma-call.js';
 import { attachReadRetry, retryRead, type ReadRetryState } from './read-retry.js';
 
 /** `I<outermost instance id>;…` — the first segment is a plain id Figma can look up. */
@@ -11,13 +12,17 @@ const lookup = async (
   probe: () => Promise<boolean>,
 ): Promise<BaseNode | null> => {
   try {
-    return await retryRead(retryCtx, () => figmaCtx.getNodeByIdAsync(id));
+    return await figmaCall('getNodeByIdAsync', id, () =>
+      retryRead(retryCtx, () => figmaCtx.getNodeByIdAsync(id)),
+    );
   } catch (cause) {
-    const message = cause instanceof Error ? cause.message : String(cause);
     const advice = (await probe())
       ? 'The target lookup failed while the session answered other reads. The id may be missing, deleted, on a page not loaded, or not yet synced from another client. A plugin reload is not indicated; try exporting the node or reading its parent.'
       : 'The session is not answering reads: the loaded-page health probe failed too. Reload the plugin to restore reads.';
-    throw new Error(`getNodeByIdAsync(${id}) failed: ${message} ${advice}`, { cause });
+    // figmaCall supplies the boundary and original cause; retain the lookup's health advice.
+    const error = cause as Error;
+    error.message += ` ${advice}`;
+    throw error;
   }
 };
 
@@ -89,12 +94,41 @@ export const withInstanceIdLookup = (
   const proxy = new Proxy({} as typeof figma, {
     get: (_, prop) => {
       if (prop === 'getNodeByIdAsync') return getNodeByIdAsync;
+      if (prop === 'loadFontAsync' && typeof figmaCtx.loadFontAsync === 'function')
+        return (font: FontName) =>
+          figmaCall('loadFontAsync', `${font.family} ${font.style}`, () =>
+            figmaCtx.loadFontAsync(font),
+          );
+      if (prop === 'setCurrentPageAsync' && typeof figmaCtx.setCurrentPageAsync === 'function')
+        return (page: PageNode) =>
+          figmaCall('setCurrentPageAsync', page.id, () => figmaCtx.setCurrentPageAsync(page));
+      if (prop === 'variables' && figmaCtx.variables !== undefined) return variables;
       const value: unknown = Reflect.get(figmaCtx, prop);
       return typeof value === 'function' ? value.bind(figmaCtx) : value;
     },
     set: (_, prop, value) => Reflect.set(figmaCtx, prop, value),
     has: (_, prop) => Reflect.has(figmaCtx, prop),
   });
+  // Bind untouched methods to the real VariablesAPI, just as the outer proxy binds Figma methods.
+  const variables =
+    figmaCtx.variables === undefined
+      ? undefined
+      : new Proxy(figmaCtx.variables, {
+          get: (_, prop) => {
+            if (
+              prop === 'getVariableByIdAsync' &&
+              typeof figmaCtx.variables.getVariableByIdAsync === 'function'
+            )
+              return (id: string) =>
+                figmaCall('getVariableByIdAsync', id, () =>
+                  figmaCtx.variables.getVariableByIdAsync(id),
+                );
+            const value: unknown = Reflect.get(figmaCtx.variables, prop);
+            return typeof value === 'function' ? value.bind(figmaCtx.variables) : value;
+          },
+          set: (_, prop, value) => Reflect.set(figmaCtx.variables, prop, value),
+          has: (_, prop) => Reflect.has(figmaCtx.variables, prop),
+        });
   attachReadRetry(proxy, retryState);
   return proxy;
 };

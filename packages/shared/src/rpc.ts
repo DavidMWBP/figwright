@@ -34,6 +34,8 @@ export const RpcOkResponseSchema = z.object({
   // leader holds the relay, so a follower has no other way to learn it — and the warning has to
   // reach whoever is actually calling tools, whichever role their process ended up in.
   notice: z.string().optional(),
+  // The answering file survives forwarding, including a later server-side processing failure.
+  attribution: z.string().optional(),
 });
 export type RpcOkResponse = z.infer<typeof RpcOkResponseSchema>;
 
@@ -42,6 +44,7 @@ export const RpcErrResponseSchema = z.object({
   requestId: z.string(),
   code: z.string(),
   message: z.string(),
+  attribution: z.string().optional(),
 });
 export type RpcErrResponse = z.infer<typeof RpcErrResponseSchema>;
 

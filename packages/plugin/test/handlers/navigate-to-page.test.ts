@@ -2,6 +2,7 @@ import type { MutateResult } from '@figwright/shared';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createNavigateToPageHandler } from '../../src/handlers/navigate-to-page.js';
+import { createSandboxHandlers } from '../../src/handlers/registry.js';
 import { unloadedPage } from '../page-fake.js';
 
 it('loads a page from root.children before accessing it', async () => {
@@ -17,6 +18,27 @@ it('loads a page from root.children before accessing it', async () => {
 });
 
 describe('navigate_to_page handler', () => {
+  it.each(['load', 'switch'])('attributes page %s rejection', async boundary => {
+    const cause = new Error('unavailable');
+    const reject = async () => {
+      throw cause;
+    };
+    const handlers = createSandboxHandlers({
+      root: {
+        children: [
+          { id: 'P:2', type: 'PAGE', loadAsync: boundary === 'load' ? reject : async () => {} },
+        ],
+      },
+      setCurrentPageAsync: reject,
+    } as unknown as typeof figma);
+    const error = await Promise.resolve(handlers.navigate_to_page!({ pageId: 'P:2' })).catch(
+      e => e,
+    );
+    expect(error).toMatchObject({
+      message: `${boundary === 'load' ? 'PageNode.loadAsync' : 'setCurrentPageAsync'}(P:2) failed: unavailable`,
+      cause,
+    });
+  });
   it('switches the active page via setCurrentPageAsync', async () => {
     const page = { id: 'P:2', type: 'PAGE', loadAsync: async () => {} };
     const setCurrentPageAsync = vi.fn<() => Promise<void>>(async () => {});

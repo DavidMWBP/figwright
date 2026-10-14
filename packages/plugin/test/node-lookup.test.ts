@@ -5,6 +5,34 @@ import { createSandboxHandlers } from '../src/handlers/registry.js';
 import { withInstanceIdLookup } from '../src/node-lookup.js';
 import { unloadedPage } from './page-fake.js';
 
+it.each(['font', 'variable', 'page'])(
+  'attributes the %s API boundary used by all handlers',
+  async boundary => {
+    const cause = new Error('unavailable');
+    const reject = async () => {
+      throw cause;
+    };
+    const ctx = withInstanceIdLookup({
+      loadFontAsync: reject,
+      variables: { getVariableByIdAsync: reject },
+      setCurrentPageAsync: reject,
+    } as unknown as typeof figma);
+    const calls = {
+      font: () => ctx.loadFontAsync({ family: 'Example Sans', style: 'Regular' }),
+      variable: () => ctx.variables.getVariableByIdAsync('V:2'),
+      page: () => ctx.setCurrentPageAsync({ id: 'P:2' } as PageNode),
+    };
+    const expected = {
+      font: 'loadFontAsync(Example Sans Regular) failed: unavailable',
+      variable: 'getVariableByIdAsync(V:2) failed: unavailable',
+      page: 'setCurrentPageAsync(P:2) failed: unavailable',
+    };
+    const error = await calls[boundary as keyof typeof calls]().catch(e => e);
+    expect(error.message).toBe(expected[boundary as keyof typeof expected]);
+    expect(error.cause).toBe(cause);
+  },
+);
+
 it('registry page handlers bypass the proxied by-id lookup', async () => {
   const f = unloadedPage();
   f.getNodeByIdAsync.mockRejectedValue(new Error('lookup unavailable'));

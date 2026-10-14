@@ -112,7 +112,7 @@ describe('export_video handler', () => {
       format: 'MP4',
       base64: null,
       reason: 'failed',
-      error: 'no animation to export',
+      error: 'exportAsync(5:5) failed: no animation to export',
     });
   });
 

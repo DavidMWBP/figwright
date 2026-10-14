@@ -32,6 +32,20 @@ const exportable = (id: string, calls: ExportCall[]): BaseNode =>
   }) as unknown as BaseNode;
 
 describe('get_screenshot handler', () => {
+  it.each([undefined, null])('attributes export rejection for render bounds %s', async bounds => {
+    const cause = new Error('unavailable');
+    const node = {
+      id: '1:2',
+      absoluteRenderBounds: bounds,
+      exportAsync: async () => {
+        throw cause;
+      },
+    } as unknown as BaseNode;
+    const error = await Promise.resolve(
+      createGetScreenshotHandler(fakeFigma({ '1:2': node }))({ nodeIds: ['1:2'] }),
+    ).catch(e => e);
+    expect(error).toMatchObject({ message: 'exportAsync(1:2) failed: unavailable', cause });
+  });
   it.each([['1:1', '8:8'], ['8:8', '8:9'], ['8:8', '1:1', '8:8'], ['1:1', '1:1'], ['9:9']])(
     'preserves successful images and each failed occurrence: %j',
     async (...nodeIds) => {

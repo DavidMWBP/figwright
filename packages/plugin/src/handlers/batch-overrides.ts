@@ -1,3 +1,4 @@
+import { figmaCall } from '../figma-call.js';
 import {
   type BindingSnapshot,
   captureBindings,
@@ -246,7 +247,11 @@ const guardFor = async (figmaCtx: typeof figma, inst: InstanceNode): Promise<Ins
   // Document order, so a swapped instance is re-swapped before any instance nested under it is
   // looked up (its id only exists again once the outer swap is back).
   const nested = inst.findAllWithCriteria({ types: ['INSTANCE'] });
-  const mains = await Promise.all(nested.map(async n => n.getMainComponentAsync()));
+  const mains = await Promise.all(
+    nested.map(async n =>
+      figmaCall('getMainComponentAsync', n.id, () => n.getMainComponentAsync()),
+    ),
+  );
   const swaps = nested.flatMap((n, i) => {
     const main = mains[i];
     return main === null || main === undefined ? [] : [{ id: n.id, mainId: main.id }];
@@ -282,7 +287,9 @@ const reswap = async (
   for (const s of swaps) {
     const node = await figmaCtx.getNodeByIdAsync(s.id);
     if (node?.type !== 'INSTANCE') continue;
-    const main = await node.getMainComponentAsync();
+    const main = await figmaCall('getMainComponentAsync', node.id, () =>
+      node.getMainComponentAsync(),
+    );
     if (main?.id === s.mainId) continue;
     const component = await figmaCtx.getNodeByIdAsync(s.mainId);
     if (component?.type !== 'COMPONENT') {

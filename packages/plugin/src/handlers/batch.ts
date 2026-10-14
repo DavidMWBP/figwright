@@ -3,6 +3,7 @@ import { BATCH_ROLLBACK_RESERVE_MS, getToolBudget } from '@figwright/shared';
 
 import type { BatchProgress } from '../../protocol/bridge.js';
 import type { SandboxHandlers, SandboxToolHandler } from '../dispatcher.js';
+import { figmaCall } from '../figma-call.js';
 import { loadPage } from '../page-lookup.js';
 import { getReadRetryState } from '../read-retry.js';
 import {
@@ -892,7 +893,9 @@ const swapBack = async (
   instance: InstanceNode,
   mainId: string,
 ): Promise<void> => {
-  const main = await instance.getMainComponentAsync();
+  const main = await figmaCall('getMainComponentAsync', instance.id, () =>
+    instance.getMainComponentAsync(),
+  );
   if (main?.id === mainId) return;
   const component = await figmaCtx.getNodeByIdAsync(mainId);
   if (component?.type !== 'COMPONENT') throw new Error(`component ${mainId} no longer exists`);
@@ -922,7 +925,9 @@ const instancePropsInverse: BatchInverse = {
       const prop = current[key];
       if (prop !== undefined) previous[key] = prop.boundVariables?.value ?? prop.value;
     }
-    const main = await instance.getMainComponentAsync();
+    const main = await figmaCall('getMainComponentAsync', instance.id, () =>
+      instance.getMainComponentAsync(),
+    );
     if (main === null) {
       throw new Error(
         `batch/set_instance_properties: ${instance.id} has no main component to return to`,
@@ -953,7 +958,9 @@ const instancePropsInverse: BatchInverse = {
 const swapInverse: BatchInverse = {
   async capture(figmaCtx, params) {
     const instance = await instanceOf(figmaCtx, params, 'swap_component');
-    const main = await instance.getMainComponentAsync();
+    const main = await figmaCall('getMainComponentAsync', instance.id, () =>
+      instance.getMainComponentAsync(),
+    );
     if (main === null) {
       throw new Error(`batch/swap_component: ${instance.id} has no main component to swap back to`);
     }
@@ -1451,7 +1458,10 @@ const bindPropertyInverse: BatchInverse = {
     const id = stringParam(params, 'nodeId', 'bind_component_property');
     const field = stringParam(params, 'field', 'bind_component_property');
     const node = (await nodeOf(figmaCtx, id, 'bind_component_property')) as Referencing;
-    const main = node.type === 'INSTANCE' ? await node.getMainComponentAsync() : null;
+    const main =
+      node.type === 'INSTANCE'
+        ? await figmaCall('getMainComponentAsync', node.id, () => node.getMainComponentAsync())
+        : null;
     const state: BindPropertyState = {
       id,
       field,

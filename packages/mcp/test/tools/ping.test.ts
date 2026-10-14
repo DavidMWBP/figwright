@@ -1,9 +1,11 @@
+import { createError, ErrorCode } from '@figwright/shared';
 import { describe, expect, it } from 'vitest';
 
 import type { Follower } from '../../src/election/follower.js';
 import { portConflictMessage } from '../../src/election/leader-lock.js';
 import { type Node, NodeRole } from '../../src/election/node.js';
 import { handlePing, pingTool } from '../../src/tools/ping.js';
+import { fakeRelay } from '../relay-fake.js';
 import { toToolDefinition } from '../tool-schema.js';
 
 const pingToolDefinition = toToolDefinition(pingTool);
@@ -20,6 +22,32 @@ const makeNode = (overrides: Partial<Node> & { role?: NodeRole }): Node =>
 const makeFollower = (overrides: Partial<Follower>): Follower => overrides as unknown as Follower;
 
 describe('ping tool', () => {
+  it('names the failed plugin route in the server-only fallback', async () => {
+    const { relay, connect } = fakeRelay();
+    const plugin = connect('session-a', 'Draft α');
+    const node = makeNode({
+      role: NodeRole.Leader,
+      isLeader: () => true,
+      getLeader: () => ({ relay }) as unknown as ReturnType<Node['getLeader']>,
+    });
+    try {
+      const result = handlePing({ node, follower: makeFollower({}), serverVersion: '1.0.0' });
+      const request = await plugin.request;
+      plugin.receive(
+        createError({
+          id: request.id,
+          sessionId: 'session-a',
+          code: ErrorCode.Internal,
+          message: 'unavailable',
+        }),
+      );
+      const answer = await result;
+      expect(answer.hop).toBe('server-only');
+      expect(answer.dispatchError).toContain('answered by session session-a, file "Draft α"');
+    } finally {
+      await relay.stop();
+    }
+  });
   it('exposes a valid MCP tool definition', () => {
     expect(pingToolDefinition.name).toBe('ping');
     expect(pingToolDefinition.inputSchema.type).toBe('object');
