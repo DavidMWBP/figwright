@@ -21,6 +21,7 @@ import { createEditComponentPropertyHandler } from '../../src/handlers/edit-comp
 import { createGroupNodesHandler } from '../../src/handlers/group-nodes.js';
 import { createMoveNodesHandler } from '../../src/handlers/move-nodes.js';
 import { createNavigateToPageHandler } from '../../src/handlers/navigate-to-page.js';
+import { createSandboxHandlers } from '../../src/handlers/registry.js';
 import { createRemoveReactionsHandler } from '../../src/handlers/remove-reactions.js';
 import { createRenameNodeHandler } from '../../src/handlers/rename-node.js';
 import { createRenameVariableHandler } from '../../src/handlers/rename-variable.js';
@@ -48,7 +49,94 @@ import { createUpdateVariableCollectionHandler } from '../../src/handlers/update
 import { createIdempotencyCache, idempotent } from '../../src/idempotency.js';
 import { withInstanceIdLookup } from '../../src/node-lookup.js';
 import { unloadedPage } from '../page-fake.js';
+import { CONNECTION_ERROR } from '../read-retry-fake.js';
 import { makeFlowsFigma } from './flows-fake.js';
+
+it('never repeats an apply that rejects with the connection error', async () => {
+  const { figmaCtx, store } = makeFigma({
+    '1:1': { id: '1:1', name: 'Before', type: 'RECTANGLE' },
+  });
+  const apply = vi.fn<(name: string) => void>(() => {
+    throw new Error(CONNECTION_ERROR);
+  });
+  Object.defineProperty(store.get('1:1')!, 'name', { get: () => 'Before', set: apply });
+  const handler = createSandboxHandlers(figmaCtx).batch!;
+  await expect(
+    handler({
+      requestId: 'once',
+      ops: [{ tool: 'rename_node', params: { nodeId: '1:1', name: 'After' } }],
+    }),
+  ).rejects.toThrow(CONNECTION_ERROR);
+  expect(apply).toHaveBeenCalledOnce();
+});
+
+it.each([
+  { phase: 'capture', failedReads: 1, name: 'After', outcome: { ok: true } },
+  {
+    phase: 'apply',
+    failedReads: 1,
+    name: 'Before',
+    outcome: { message: expect.stringContaining('op 0 (rename_node) failed') },
+  },
+  {
+    phase: 'rollback',
+    failedReads: 2,
+    name: 'After',
+    outcome: { message: expect.stringMatching(/1 undo\(s\) FAILED/) },
+  },
+  {
+    phase: 'reserve',
+    failedReads: 1,
+    name: 'Before',
+    outcome: { message: expect.stringContaining('capture failed before any op was applied') },
+  },
+])('bounds connection retries in %s', async ({ phase, failedReads, name, outcome }) => {
+  vi.useFakeTimers();
+  vi.setSystemTime(0);
+  try {
+    const { figmaCtx, store } = makeFigma({
+      '1:1': { id: '1:1', name: 'Before', type: 'RECTANGLE' },
+    });
+    const lookup = vi
+      .fn<(id: string) => Promise<unknown>>()
+      .mockImplementation(async () => store.get('1:1'));
+    const failingRead = vi.fn<() => Promise<never>>(async () => {
+      throw new Error(CONNECTION_ERROR);
+    });
+    if (phase === 'capture') lookup.mockImplementationOnce(failingRead);
+    if (phase === 'reserve')
+      lookup.mockImplementation(async () => {
+        vi.setSystemTime(59_750); // One-op stop is 70s: 250ms pause plus the platform's 10s cannot fit.
+        return failingRead();
+      });
+    Object.assign(figmaCtx, { getNodeByIdAsync: lookup });
+    const handler = createSandboxHandlers(figmaCtx).batch!;
+    const ops = [{ tool: 'rename_node', params: { nodeId: '1:1', name: 'After' } }];
+    if (phase === 'rollback')
+      ops.push({ tool: 'rename_node', params: { nodeId: '1:1', name: 'Next' } });
+    const reading = Promise.resolve(
+      handler(
+        { requestId: phase, ops },
+        {
+          progress: state => {
+            if (
+              (phase === 'apply' && state.phase === 'apply') ||
+              (phase === 'rollback' && state.phase === 'apply' && state.inFlight[0] === 1)
+            )
+              lookup.mockImplementation(failingRead);
+          },
+        },
+      ),
+    ).catch(error => error);
+    await vi.runAllTimersAsync();
+    const result = await reading;
+    expect(result).toMatchObject(outcome);
+    expect(store.get('1:1')!.name).toBe(name);
+    expect(failingRead).toHaveBeenCalledTimes(failedReads);
+  } finally {
+    vi.useRealTimers();
+  }
+});
 
 it.each(['navigate_to_page', 'update_flows'])('loads the page before capturing %s', async tool => {
   const f = unloadedPage();

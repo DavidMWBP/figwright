@@ -4,6 +4,7 @@ import { BATCH_ROLLBACK_RESERVE_MS, getToolBudget } from '@figwright/shared';
 import type { BatchProgress } from '../../protocol/bridge.js';
 import type { SandboxHandlers, SandboxToolHandler } from '../dispatcher.js';
 import { loadPage } from '../page-lookup.js';
+import { getReadRetryState } from '../read-retry.js';
 import {
   captureOverrideGuard,
   type InstanceGuard,
@@ -1971,6 +1972,8 @@ export const createBatchHandler =
   async (params, context) => {
     // Read the clock before capture too: its awaits consume the same call budget as apply.
     const stopAt = Date.now() + getToolBudget('batch', params) - BATCH_ROLLBACK_RESERVE_MS;
+    const retryState = getReadRetryState(figmaCtx);
+    if (retryState !== undefined) retryState.stopAt = stopAt;
     const ops = parseOps(params);
     for (const op of ops) {
       if (apply[op.tool] === undefined) throw new Error(`batch: no handler for op '${op.tool}'`);
@@ -2013,6 +2016,8 @@ export const createBatchHandler =
       });
     }
     const flowsBefore = captureFlows(figmaCtx);
+    // Capture may retry reads; apply and undo keep their original latency and never retry.
+    if (retryState !== undefined) retryState.enabled = false;
 
     // Phase 2 — apply in order; roll back already-applied ops on the first failure.
     const results: unknown[] = [];
