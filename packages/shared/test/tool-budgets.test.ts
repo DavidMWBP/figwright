@@ -48,9 +48,6 @@ describe('tool budgets', () => {
       // A library import can wait on Figma's throttled timers in a background file.
       'import_variable',
       'import_style',
-      // Carries N writes and, on a failure, N undos — a timeout mid-rollback would hide whether the
-      // document was left changed.
-      'batch',
     ]) {
       expect(getToolBudget(t)).toBe(HEAVY_TOOL_BUDGET_MS);
     }

@@ -75,12 +75,14 @@ When the source takes an easing or a duration from a design token, bind it: pass
 variable of the wrong type, or one that does not exist, is refused before anything changes. Create
 them with `create_variable` (`EASING` / `TIMING`, no `scopes`) and set them with `set_variable_value`.
 
-## Stagger → one atomic `batch` (the efficiency win)
+## Stagger → one `batch` with rollback (the efficiency win)
 
 A `staggerChildren`, a GSAP `stagger`, or per-index `animation-delay` over a row of N nodes → **one
 `batch`** of N `apply_animation_style` ops, each with `config.timelineOffset = index * step`. That's a
 single round-trip that's undoable as a unit (Cmd-Z once reverts the whole stagger) — don't fire N
-sequential calls.
+sequential calls. All-or-nothing holds when the call answers, except for reported undo failures or
+residue. A stop for time rolls back applied ops and reports how it went. An unknown-outcome timeout
+names the last completed indexes; read back the targets before any retry.
 
 ```jsonc
 // batch ops for a 3-item staggered fade-in, step 0.1s

@@ -5,16 +5,20 @@ import type { ToolSpec } from './spec.js';
 export const BATCH_TOOL_NAME = 'batch';
 
 /**
- * Apply several write ops atomically. The plugin snapshots every op's target first, then applies
+ * Apply several write ops with rollback. The plugin snapshots every op's target first, then applies
  * them in order; if any op fails it rolls the already-applied ops back — values, style links,
  * variable bindings, text runs, layout and instance overrides — and the call rejects. An op joins
  * only if it has a faithful inverse: ops that delete something cannot bring its id back and are
- * refused with the reason, so the all-or-nothing guarantee holds.
+ * refused with the reason. A stop for time rolls back applied ops and reports the result. A bridge
+ * timeout reports an unknown outcome and the last completed indexes; read back before retrying.
  */
 export const batchTool: ToolSpec = {
   name: BATCH_TOOL_NAME,
   description:
-    'Apply multiple write ops atomically (all-or-nothing with rollback). ops is an ordered list of ' +
+    'Apply multiple write ops with rollback: all-or-nothing when the call answers, except for ' +
+    'reported undo failures or residue. A stop for time rolls back applied ops and reports how it went. ' +
+    'An unknown-outcome timeout names the last reported completed op indexes, in-flight ops and phase; ' +
+    'read back the targets before any retry. Indexes are zero-based. ops is an ordered list of ' +
     '{ tool, params } where tool is any write that can be undone exactly — property, text, layout, ' +
     'style, variable, component, structure and create writes (e.g. set_fills, set_text, ' +
     'set_auto_layout, reparent_nodes, create_frame). Ops that delete something (delete_*, ' +
@@ -31,7 +35,7 @@ export const batchTool: ToolSpec = {
         }),
       )
       .min(1)
-      .describe('Ordered write ops applied atomically'),
+      .describe('Ordered write ops with rollback; timeout can leave an unknown outcome'),
   }),
   kind: 'write',
 };

@@ -1,4 +1,10 @@
-import { ErrorCode, type RpcResponse } from '@figwright/shared';
+import {
+  ErrorCode,
+  getToolBudget,
+  getRelayBudget,
+  getFollowerBudget,
+  type RpcResponse,
+} from '@figwright/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
@@ -14,6 +20,7 @@ import { type Node, NodeRole } from '../src/election/node.js';
 import type { PluginSessionInfo } from '../src/routing/sessions.js';
 import { clearFileTarget, setFileTarget } from '../src/routing/target.js';
 import { captureNotices, withRoutingNotice } from '../src/tools/notices.js';
+import { ALL_TOOL_SPECS } from '../src/tools/registry.js';
 
 const makeNode = (overrides: Partial<Node>): Node =>
   ({
@@ -27,6 +34,32 @@ const makeNode = (overrides: Partial<Node>): Node =>
 const makeFollower = (overrides: Partial<Follower>): Follower => overrides as unknown as Follower;
 
 describe('dispatchTool', () => {
+  it('keeps every non-batch tool on its existing three budgets regardless of ops', () => {
+    const heavy = new Set([
+      'get_screenshot',
+      'save_screenshots',
+      'save_image_fills',
+      'export_pdf',
+      'get_document',
+      'get_design_context',
+      'get_node',
+      'get_nodes_info',
+      'search_nodes',
+      'scan_text_nodes',
+      'scan_nodes_by_types',
+      'get_local_components',
+      'import_variable',
+      'import_style',
+    ]);
+    for (const { name } of ALL_TOOL_SPECS) {
+      if (name === 'batch') continue;
+      const budget = heavy.has(name) ? 120_000 : 30_000;
+      const params = { ops: Array.from({ length: 100 }, () => ({})) };
+      expect(getToolBudget(name, params)).toBe(budget);
+      expect(getRelayBudget(name, params)).toBe(budget + 5_000);
+      expect(getFollowerBudget(name, params)).toBe(budget + 10_000);
+    }
+  });
   it.each([true, false])('passes the op count to the budget on leader=%s', async leader => {
     let budget: number | undefined;
     const node = makeNode({

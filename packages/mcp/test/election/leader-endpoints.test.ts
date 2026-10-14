@@ -53,7 +53,7 @@ afterEach(async () => {
 });
 
 const startLeader = async (
-  rpcTimeoutMs = 5_000,
+  rpcTimeoutMs: number | null = 5_000,
   extraDeps: Partial<LeaderEndpointDeps> = {},
 ): Promise<Bound> => {
   const http = createServer();
@@ -63,7 +63,7 @@ const startLeader = async (
   const detach = attachLeaderEndpoints(http, {
     relay,
     serverVersion: '1.0.0',
-    rpcTimeoutMs,
+    ...(rpcTimeoutMs === null ? {} : { rpcTimeoutMs }),
     ...extraDeps,
   });
   const b: Bound = { http, relay, port, detach, plugins: [] };
@@ -143,7 +143,7 @@ const callRpc = async (port: number, req: RpcRequest): Promise<RpcResponse> => {
 describe('leader endpoints', () => {
   it('uses the op-count relay budget for forwarded calls and preserves overrides', async () => {
     for (const override of [undefined, 17]) {
-      const b = await startLeader(5_000, { rpcTimeoutMs: override });
+      const b = await startLeader(override ?? null);
       const send = vi.spyOn(b.relay, 'sendRequest').mockResolvedValue({ ok: true });
       const args = {
         ops: Array.from({ length: 12 }, () => ({

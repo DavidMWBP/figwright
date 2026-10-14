@@ -102,6 +102,32 @@ const realWrites = (figmaCtx: typeof figma): SandboxHandlers => ({
 const SOLID = (r: number): unknown => ({ type: 'SOLID', color: { r, g: 0, b: 0 } });
 
 describe('batch deadlines', () => {
+  it.each([1, 12, 48])(
+    'preserves successful results for %i ops within the deadline',
+    async count => {
+      vi.useFakeTimers();
+      vi.setSystemTime(0);
+      try {
+        const { figmaCtx, store } = makeFigma({ '1:1': { id: '1:1', name: 'before' } });
+        const result = await createBatchHandler(
+          figmaCtx,
+          realWrites(figmaCtx),
+        )({
+          ops: Array.from({ length: count }, (_, i) => ({
+            tool: 'rename_node',
+            params: { nodeId: '1:1', name: `after-${i}` },
+          })),
+        });
+        expect(result).toEqual({
+          ok: true,
+          results: Array.from({ length: count }, () => ({ ok: true, nodeId: '1:1' })),
+        });
+        expect(store.get('1:1')!.name).toBe(`after-${count - 1}`);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
   it('stops before the next op and rolls back when the batch deadline is reached', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
@@ -127,7 +153,10 @@ describe('batch deadlines', () => {
       );
       const { figmaCtx, store } = makeFigma(initial);
       let finish: (() => void) | undefined;
-      const started = Promise.withResolvers<void>();
+      let markStarted!: () => void;
+      const started = new Promise<void>(resolve => {
+        markStarted = resolve;
+      });
       const calls: string[] = [];
       const handler = createBatchHandler(figmaCtx, {
         rename_node: async params => {
@@ -137,7 +166,7 @@ describe('batch deadlines', () => {
           if (calls.length === 2) {
             await new Promise<void>(resolve => {
               finish = resolve;
-              started.resolve();
+              markStarted();
             });
           }
           return { ok: true };
@@ -149,14 +178,16 @@ describe('batch deadlines', () => {
           params: { nodeId, name: 'after' },
         })),
       }) as Promise<unknown>;
-      const rejected = expect(answer).rejects.toThrow(
-        /stopped for time after op 1.*rolled back 2 applied op\(s\)/,
-      );
-      await started.promise;
+      const outcome = answer.catch(error => error as Error);
+      await started;
       vi.setSystemTime(90_001); // 150s budget less the 60s rollback reserve.
       expect(undone).toEqual([]); // Never undo while the second apply is pending.
       finish!();
-      await rejected;
+      expect(await outcome).toMatchObject({
+        message: expect.stringMatching(
+          /stopped for time after op 1.*rolled back 2 applied op\(s\)/,
+        ),
+      });
       expect(calls).toEqual(['1:1', '1:2']);
       expect(undone).toEqual(['1:2', '1:1']);
     } finally {
@@ -176,7 +207,7 @@ describe('batch deadlines', () => {
           vi.setSystemTime(count === 1 ? 70_001 : count === 12 ? 180_001 : 540_001);
           return lookup(id);
         };
-        const apply = vi.fn(() => ({ ok: true }));
+        const apply = vi.fn<() => { ok: boolean }>(() => ({ ok: true }));
         await expect(
           createBatchHandler(figmaCtx, { rename_node: apply })({
             ops: Array.from({ length: count }, () => ({

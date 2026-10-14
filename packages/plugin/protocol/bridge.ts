@@ -43,10 +43,27 @@ export const PluginToolErrorSchema = z.object({
   message: z.string(),
 });
 
+/** Zero-based indexes. Completed means apply settled successfully, even if later undone. */
+export const BatchProgressSchema = z.object({
+  phase: z.enum(['capture', 'apply', 'rollback']),
+  completed: z.array(z.number().int().nonnegative()),
+  inFlight: z.array(z.number().int().nonnegative()),
+  rolledBack: z.array(z.number().int().nonnegative()),
+});
+export type BatchProgress = z.infer<typeof BatchProgressSchema>;
+
+export const PluginToolProgressSchema = z.object({
+  ...baseFields,
+  kind: z.literal('tool-progress'),
+  ...BatchProgressSchema.shape,
+});
+export type PluginToolProgress = z.infer<typeof PluginToolProgressSchema>;
+
 export const PluginBridgeMessageSchema = z.discriminatedUnion('kind', [
   PluginToolCallSchema,
   PluginToolResultSchema,
   PluginToolErrorSchema,
+  PluginToolProgressSchema,
 ]);
 
 export type PluginToolCall = z.infer<typeof PluginToolCallSchema>;
