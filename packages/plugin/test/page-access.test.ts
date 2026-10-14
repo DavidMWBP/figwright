@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { createBatchHandler } from '../src/handlers/batch.js';
 import { createDeletePageHandler } from '../src/handlers/delete-page.js';
 import { createNavigateToPageHandler } from '../src/handlers/navigate-to-page.js';
 import { createRenamePageHandler } from '../src/handlers/rename-page.js';
@@ -13,6 +14,32 @@ const handlers = [
   ['delete_page', createDeletePageHandler],
   ['update_flows', createUpdateFlowsHandler],
 ] as const;
+
+it.each(['navigate_to_page', 'update_flows'])(
+  'preserves page capture errors for %s',
+  async tool => {
+    const f = unloadedPage();
+    const handler = createBatchHandler(f.figmaCtx, {
+      navigate_to_page: createNavigateToPageHandler(f.figmaCtx),
+      update_flows: createUpdateFlowsHandler(f.figmaCtx),
+    });
+    const run = (pageId: string) => handler({ ops: [{ tool, params: { pageId } }] });
+    await expect(run('missing')).rejects.toThrow(`batch/${tool}: node missing not found`);
+    f.getNodeByIdAsync.mockResolvedValue({ id: 'frame', type: 'FRAME' } as BaseNode);
+    await expect(run('frame')).rejects.toThrow(
+      tool === 'update_flows'
+        ? 'batch/update_flows: frame is not a page'
+        : 'batch/navigate_to_page: page frame not found',
+    );
+    f.getNodeByIdAsync.mockClear();
+    f.loadAsync.mockRejectedValue(new Error('contents unavailable'));
+    await expect(run(f.page.id)).rejects.toThrow(
+      'PageNode.loadAsync(P:2) failed: contents unavailable',
+    );
+    expect(f.getNodeByIdAsync).not.toHaveBeenCalled();
+    expect(f.figmaCtx.setCurrentPageAsync).not.toHaveBeenCalled();
+  },
+);
 
 describe.each(handlers)('%s page access', (tool, create) => {
   it.each(['missing', 'frame'])('preserves the error for %s ids', async id => {

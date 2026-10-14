@@ -57,36 +57,13 @@ it.each(['navigate_to_page', 'update_flows'])('loads the page before capturing %
     update_flows: createUpdateFlowsHandler(f.figmaCtx),
   });
   f.finish();
-  await handler({ ops: [{ tool, params: { pageId: f.page.id } }] });
+  const result = await Promise.resolve(
+    handler({ ops: [{ tool, params: { pageId: f.page.id } }] }),
+  ).catch(error => error);
   expect(f.loadAsync).toHaveBeenCalled();
   expect(f.getNodeByIdAsync).not.toHaveBeenCalled();
+  expect(result).toMatchObject({ ok: true, results: [{ ok: true }] });
 });
-
-it.each(['navigate_to_page', 'update_flows'])(
-  'preserves page capture errors for %s',
-  async tool => {
-    const f = unloadedPage();
-    const handler = createBatchHandler(f.figmaCtx, {
-      navigate_to_page: createNavigateToPageHandler(f.figmaCtx),
-      update_flows: createUpdateFlowsHandler(f.figmaCtx),
-    });
-    const run = (pageId: string) => handler({ ops: [{ tool, params: { pageId } }] });
-    await expect(run('missing')).rejects.toThrow(`batch/${tool}: node missing not found`);
-    f.getNodeByIdAsync.mockResolvedValue({ id: 'frame', type: 'FRAME' } as BaseNode);
-    await expect(run('frame')).rejects.toThrow(
-      tool === 'update_flows'
-        ? 'batch/update_flows: frame is not a page'
-        : 'batch/navigate_to_page: page frame not found',
-    );
-    f.getNodeByIdAsync.mockClear();
-    f.loadAsync.mockRejectedValue(new Error('contents unavailable'));
-    await expect(run(f.page.id)).rejects.toThrow(
-      'PageNode.loadAsync(P:2) failed: contents unavailable',
-    );
-    expect(f.getNodeByIdAsync).not.toHaveBeenCalled();
-    expect(f.figmaCtx.setCurrentPageAsync).not.toHaveBeenCalled();
-  },
-);
 
 /** A mutable node store backing a fake figma whose getNodeByIdAsync / createFrame share one map. */
 const MIXED = Symbol('mixed');

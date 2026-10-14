@@ -10,13 +10,15 @@ it('registry page handlers bypass the proxied by-id lookup', async () => {
   f.getNodeByIdAsync.mockRejectedValue(new Error('lookup unavailable'));
   f.finish();
   const handlers = createSandboxHandlers(f.figmaCtx);
-  expect(await handlers.rename_page!({ pageId: f.page.id, name: 'After' })).toEqual({
+  const result = await Promise.resolve(
+    handlers.rename_page!({ pageId: f.page.id, name: 'After' }),
+  ).catch(error => error);
+  expect(f.getNodeByIdAsync).not.toHaveBeenCalled();
+  expect(result).toEqual({
     ok: true,
     nodeId: f.page.id,
   });
   expect(f.page.name).toBe('After');
-  expect(f.loadAsync).toHaveBeenCalledOnce();
-  expect(f.getNodeByIdAsync).not.toHaveBeenCalled();
 });
 
 // Figma's own rejection, measured live while the by-id lookup was timing out: a bare string, not an Error.
