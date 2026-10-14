@@ -3,6 +3,7 @@ import { BATCH_ROLLBACK_RESERVE_MS, getToolBudget } from '@figwright/shared';
 
 import type { BatchProgress } from '../../protocol/bridge.js';
 import type { SandboxHandlers, SandboxToolHandler } from '../dispatcher.js';
+import { loadPage } from '../page-lookup.js';
 import {
   captureOverrideGuard,
   type InstanceGuard,
@@ -1348,8 +1349,11 @@ const restoreFlows = (figmaCtx: typeof figma, before: FlowsSnapshot): string[] =
 const updateFlowsInverse: BatchInverse = {
   async capture(figmaCtx, params) {
     const pageId = stringParam(params, 'pageId', 'update_flows');
-    const page = await nodeOf(figmaCtx, pageId, 'update_flows');
-    if (page.type !== 'PAGE') throw new Error(`batch/update_flows: ${pageId} is not a page`);
+    const page = await loadPage(figmaCtx, pageId);
+    if (page === null) {
+      await nodeOf(figmaCtx, pageId, 'update_flows');
+      throw new Error(`batch/update_flows: ${pageId} is not a page`);
+    }
     return null;
   },
   undo: async () => undefined,
@@ -1500,15 +1504,18 @@ const reactionsInverse = (tool: string): BatchInverse => ({
 const navigateInverse: BatchInverse = {
   async capture(figmaCtx, params) {
     const id = stringParam(params, 'pageId', 'navigate_to_page');
-    const page = await nodeOf(figmaCtx, id, 'navigate_to_page');
-    if (page.type !== 'PAGE') throw new Error(`batch/navigate_to_page: page ${id} not found`);
+    const page = await loadPage(figmaCtx, id);
+    if (page === null) {
+      await nodeOf(figmaCtx, id, 'navigate_to_page');
+      throw new Error(`batch/navigate_to_page: page ${id} not found`);
+    }
     return { previous: figmaCtx.currentPage.id };
   },
   async undo(figmaCtx, _params, captured) {
     const { previous } = captured as { previous: string };
     if (figmaCtx.currentPage.id === previous) return undefined;
-    const page = await figmaCtx.getNodeByIdAsync(previous);
-    if (page?.type === 'PAGE') await figmaCtx.setCurrentPageAsync(page);
+    const page = await loadPage(figmaCtx, previous);
+    if (page !== null) await figmaCtx.setCurrentPageAsync(page);
     return undefined;
   },
 };

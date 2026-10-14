@@ -77,6 +77,7 @@ export const makeFlowsFigma = () => {
   const makePage = (id: string, name: string): FlowsPage => {
     let stored: FakeFlow[] = [];
     const page = add({ id, type: 'PAGE', name, parent: null }) as FlowsPage;
+    page.loadAsync = async () => {};
     pages.push(page);
     const qualifies = (nodeId: string): boolean => {
       const node = nodes.get(nodeId);

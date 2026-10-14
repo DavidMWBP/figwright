@@ -2,12 +2,26 @@ import type { MutateResult } from '@figwright/shared';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createNavigateToPageHandler } from '../../src/handlers/navigate-to-page.js';
+import { unloadedPage } from '../page-fake.js';
+
+it('loads a page from root.children before accessing it', async () => {
+  const f = unloadedPage();
+  const running = Promise.resolve(createNavigateToPageHandler(f.figmaCtx)({ pageId: f.page.id }));
+  void running.catch(() => {});
+  expect(f.loadAsync).toHaveBeenCalledOnce();
+  expect(f.getNodeByIdAsync).not.toHaveBeenCalled();
+  f.finish();
+  await running;
+  expect(f.figmaCtx.currentPage.id).toBe(f.page.id);
+  expect(f.getNodeByIdAsync).not.toHaveBeenCalled();
+});
 
 describe('navigate_to_page handler', () => {
   it('switches the active page via setCurrentPageAsync', async () => {
-    const page = { id: 'P:2', type: 'PAGE' };
+    const page = { id: 'P:2', type: 'PAGE', loadAsync: async () => {} };
     const setCurrentPageAsync = vi.fn<() => Promise<void>>(async () => {});
     const f = {
+      root: { children: [page] },
       getNodeByIdAsync: async () => page,
       setCurrentPageAsync,
     } as unknown as typeof figma;
@@ -19,6 +33,7 @@ describe('navigate_to_page handler', () => {
 
   it('throws on missing page or bad input', async () => {
     const f = {
+      root: { children: [] },
       getNodeByIdAsync: async () => null,
       setCurrentPageAsync: vi.fn<() => Promise<void>>(async () => {}),
     } as unknown as typeof figma;
