@@ -218,6 +218,11 @@ describe('GetNode / GetNodesInfo / GetMetadata / GetPages schemas', () => {
       nodes: [serializeNode(baseInput()), null, serializeNode(baseInput({ id: '1:5' }))],
     };
     expect(GetNodesInfoResultSchema.parse(payload)).toEqual(payload);
+    const partial = {
+      ...payload,
+      lookupErrors: [{ index: 1, nodeId: '1:3', message: 'lookup rejected' }],
+    };
+    expect(GetNodesInfoResultSchema.parse(partial)).toEqual(partial);
   });
 
   it('GetMetadataResult validates fileName + pages + currentPage + editor', async () => {

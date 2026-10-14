@@ -2,6 +2,21 @@ import type { GetNodesInfoResult } from '@figwright/shared';
 import { describe, expect, it } from 'vitest';
 
 import { createGetNodesInfoHandler } from '../../src/handlers/get-nodes-info.js';
+import { withInstanceIdLookup } from '../../src/node-lookup.js';
+
+const timeout =
+  'Unable to establish connection to Figma after 10 seconds. Please check your internet connection.';
+
+const rejectingHandler = () =>
+  createGetNodesInfoHandler(
+    withInstanceIdLookup({
+      getNodeByIdAsync: async (id: string) => {
+        if (id === '1:3') return null;
+        if (id === '1:2' || id === '1:4') return fake({ id });
+        throw timeout; // eslint-disable-line no-throw-literal
+      },
+    } as unknown as typeof figma),
+  );
 
 const fake = (overrides: Record<string, unknown> = {}): SceneNode =>
   ({
@@ -24,6 +39,49 @@ const fakeFigma = (lookup: Record<string, BaseNode | null>): typeof figma =>
   }) as unknown as typeof figma;
 
 describe('get_nodes_info handler', () => {
+  it('keeps other results when one lookup rejects', async () => {
+    const result = (await rejectingHandler()({
+      nodeIds: ['1:4', '8:8', '1:2'],
+    })) as GetNodesInfoResult;
+    expect(result.nodes.map(n => n?.id ?? null)).toEqual(['1:4', null, '1:2']);
+    expect(result).toMatchObject({
+      lookupErrors: [{ index: 1, nodeId: '8:8', message: expect.stringContaining(timeout) }],
+    });
+  });
+
+  it('distinguishes a missing id from a rejected lookup', async () => {
+    const result = (await rejectingHandler()({ nodeIds: ['1:3', '8:8'] })) as GetNodesInfoResult;
+    expect(result.nodes).toEqual([null, null]);
+    expect(result).toMatchObject({ lookupErrors: [{ index: 1, nodeId: '8:8' }] });
+    expect(result.lookupErrors).toHaveLength(1);
+  });
+
+  it.each([{ nodeIds: ['8:8'] }, { nodeIds: ['8:8', '8:9'] }])(
+    'throws the contextual lookup error when every id rejects: $nodeIds',
+    async ({ nodeIds }) => {
+      await expect(rejectingHandler()({ nodeIds })).rejects.toMatchObject({
+        message: expect.stringContaining('getNodeByIdAsync(8:8)'),
+        cause: timeout,
+      });
+    },
+  );
+
+  it('reports each rejected occurrence of a duplicate id', async () => {
+    const result = (await rejectingHandler()({
+      nodeIds: ['8:8', '1:2', '8:8'],
+    })) as GetNodesInfoResult;
+    expect(result.nodes.map(n => n?.id ?? null)).toEqual([null, '1:2', null]);
+    expect(result).toMatchObject({
+      lookupErrors: [
+        { index: 0, nodeId: '8:8' },
+        { index: 2, nodeId: '8:8' },
+      ],
+    });
+  });
+
+  it('returns the existing empty result for no ids', async () => {
+    expect(await rejectingHandler()({ nodeIds: [] })).toEqual({ nodes: [] });
+  });
   it('throws when nodeIds is not a string[]', async () => {
     const handler = createGetNodesInfoHandler(fakeFigma({}));
     await expect(handler({ nodeIds: 'not-array' })).rejects.toThrow(/string\[]/);

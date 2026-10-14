@@ -46,6 +46,7 @@ import { createUpdatePaintStyleHandler } from '../../src/handlers/update-paint-s
 import { createUpdateTextStyleHandler } from '../../src/handlers/update-text-style.js';
 import { createUpdateVariableCollectionHandler } from '../../src/handlers/update-variable-collection.js';
 import { createIdempotencyCache, idempotent } from '../../src/idempotency.js';
+import { withInstanceIdLookup } from '../../src/node-lookup.js';
 import { makeFlowsFigma } from './flows-fake.js';
 
 /** A mutable node store backing a fake figma whose getNodeByIdAsync / createFrame share one map. */
@@ -896,32 +897,37 @@ describe('batch handler', () => {
     expect(store.get('1:2')).toMatchObject({ x: 10, y: 0 }); // moved once, not twice
   });
 
-  it('turns a bare-string rejection during capture into an Error saying nothing was applied', async () => {
-    // Figma can reject with a plain string (measured: a connection failure); it must not escape raw.
-    const { figmaCtx, store } = makeFigma({ '1:1': { id: '1:1', name: 'A' } });
-    const handler = createBatchHandler(
-      {
+  it.each([false, true])(
+    'reports capture safety for a bare-string lookup rejection (wrapped: %s)',
+    async wrapped => {
+      // Figma can reject with a plain string (measured: a connection failure); it must not escape raw.
+      const { figmaCtx, store } = makeFigma({ '1:1': { id: '1:1', name: 'A' } });
+      const rejecting = {
         ...figmaCtx,
         getNodeByIdAsync: async (id: string) => {
           if (id === 'offline') throw 'Unable to establish connection to Figma after 10 seconds'; // eslint-disable-line no-throw-literal
           return store.get(id) ?? null;
         },
-      } as unknown as typeof figma,
-      realWrites(figmaCtx),
-    );
+      } as unknown as typeof figma;
+      const handler = createBatchHandler(
+        wrapped ? withInstanceIdLookup(rejecting) : rejecting,
+        realWrites(figmaCtx),
+      );
 
-    const failure = handler({
-      ops: [
-        { tool: 'rename_node', params: { nodeId: '1:1', name: 'renamed' } },
-        { tool: 'rename_node', params: { nodeId: 'offline', name: 'x' } },
-      ],
-    });
-    await expect(failure).rejects.toBeInstanceOf(Error);
-    await expect(failure).rejects.toThrow(
-      /capture failed before any op was applied: Unable to establish connection/,
-    );
-    expect(store.get('1:1')).toMatchObject({ name: 'A' });
-  });
+      const failure = handler({
+        ops: [
+          { tool: 'rename_node', params: { nodeId: '1:1', name: 'renamed' } },
+          { tool: 'rename_node', params: { nodeId: 'offline', name: 'x' } },
+        ],
+      });
+      await expect(failure).rejects.toBeInstanceOf(Error);
+      await expect(failure).rejects.toThrow(
+        /capture failed before any op was applied: .*Unable to establish connection/,
+      );
+      if (wrapped) await expect(failure).rejects.toThrow('getNodeByIdAsync(offline)');
+      expect(store.get('1:1')).toMatchObject({ name: 'A' });
+    },
+  );
 
   it('resolves bound variables at capture, so no undo has to ask Figma for one', async () => {
     // A live rollback was measured failing on exactly this call ("Unable to establish connection to
