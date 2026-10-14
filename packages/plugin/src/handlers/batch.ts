@@ -1,4 +1,5 @@
 import type { BatchResult, FlowStartingPoint } from '@figwright/shared';
+import { BATCH_ROLLBACK_RESERVE_MS, getToolBudget } from '@figwright/shared';
 
 import type { SandboxHandlers, SandboxToolHandler } from '../dispatcher.js';
 import {
@@ -1953,6 +1954,8 @@ const undoOp = async (
 export const createBatchHandler =
   (figmaCtx: typeof figma, apply: SandboxHandlers): SandboxToolHandler =>
   async params => {
+    // Read the clock before capture too: its awaits consume the same call budget as apply.
+    const stopAt = Date.now() + getToolBudget('batch', params) - BATCH_ROLLBACK_RESERVE_MS;
     const ops = parseOps(params);
     for (const op of ops) {
       if (apply[op.tool] === undefined) throw new Error(`batch: no handler for op '${op.tool}'`);
@@ -1978,7 +1981,11 @@ export const createBatchHandler =
     /* eslint-disable no-await-in-loop -- apply order is significant and rollback needs partial results */
     for (let i = 0; i < ops.length; i += 1) {
       const op = ops[i]!;
+      const stoppedForTime = Date.now() >= stopAt;
       try {
+        // Never race rollback against an in-flight Figma await. This check runs only after the
+        // preceding apply has settled; the reserve is best effort, not a bound on Figma latency.
+        if (stoppedForTime) throw new Error('rollback reserve reached');
         results.push(await apply[op.tool]!(op.params));
       } catch (err) {
         // Unwind applied ops in reverse. Keep going even if one undo throws, but record which ones
@@ -2003,7 +2010,12 @@ export const createBatchHandler =
             : `rolled back ${i - undoFailures.length}/${i} op(s); ${undoFailures.length} undo(s) FAILED [${undoFailures.join('; ')}] — document may be partially changed`;
         const leftover =
           residue.length === 0 ? '' : ` (restored with residue: ${residue.join('; ')})`;
-        throw new Error(`batch: op ${i} (${op.tool}) failed, ${rollback}${leftover}: ${message}`, {
+        const failure = stoppedForTime
+          ? i === 0
+            ? 'stopped for time before op 0; nothing was applied'
+            : `stopped for time after op ${i - 1} (indexes are zero-based)`
+          : `op ${i} (${op.tool}) failed`;
+        throw new Error(`batch: ${failure}, ${rollback}${leftover}: ${message}`, {
           cause: err,
         });
       }
