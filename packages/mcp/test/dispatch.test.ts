@@ -57,7 +57,7 @@ describe('dispatchTool', () => {
   it('does not retry a plugin rejection because its filename contains transport', async () => {
     vi.useFakeTimers();
     const attribution = '(answered by session session-a, file "transport")';
-    const sendRpc = vi.fn(
+    const sendRpc = vi.fn<() => Promise<RpcResponse>>(
       async () =>
         ({
           kind: 'err',

@@ -186,23 +186,23 @@ describe('leader endpoints', () => {
                 message: 'getNodeByIdAsync(1:2) failed: unavailable',
               }),
         );
-        if (outcome === 'success') {
-          expect(await response).toEqual({
-            kind: 'ok',
-            requestId: 'r',
-            result: {},
-            attribution: '(answered by session session-a, file "Draft timeout α")',
-          });
-          return;
-        }
-        expect(await response).toEqual({
-          kind: 'err',
-          requestId: 'r',
-          code: ErrorCode.Internal,
-          message:
-            'INTERNAL_ERROR: getNodeByIdAsync(1:2) failed: unavailable (answered by session session-a, file "Draft timeout α")',
-          attribution: '(answered by session session-a, file "Draft timeout α")',
-        });
+        const expected =
+          outcome === 'success'
+            ? {
+                kind: 'ok',
+                requestId: 'r',
+                result: {},
+                attribution: '(answered by session session-a, file "Draft timeout α")',
+              }
+            : {
+                kind: 'err',
+                requestId: 'r',
+                code: ErrorCode.Internal,
+                message:
+                  'INTERNAL_ERROR: getNodeByIdAsync(1:2) failed: unavailable (answered by session session-a, file "Draft timeout α")',
+                attribution: '(answered by session session-a, file "Draft timeout α")',
+              };
+        expect(await response).toEqual(expected);
       } finally {
         detach();
         await relay.stop();
