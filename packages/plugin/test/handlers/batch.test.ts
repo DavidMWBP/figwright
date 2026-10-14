@@ -47,7 +47,46 @@ import { createUpdateTextStyleHandler } from '../../src/handlers/update-text-sty
 import { createUpdateVariableCollectionHandler } from '../../src/handlers/update-variable-collection.js';
 import { createIdempotencyCache, idempotent } from '../../src/idempotency.js';
 import { withInstanceIdLookup } from '../../src/node-lookup.js';
+import { unloadedPage } from '../page-fake.js';
 import { makeFlowsFigma } from './flows-fake.js';
+
+it.each(['navigate_to_page', 'update_flows'])('loads the page before capturing %s', async tool => {
+  const f = unloadedPage();
+  const handler = createBatchHandler(f.figmaCtx, {
+    navigate_to_page: createNavigateToPageHandler(f.figmaCtx),
+    update_flows: createUpdateFlowsHandler(f.figmaCtx),
+  });
+  f.finish();
+  await handler({ ops: [{ tool, params: { pageId: f.page.id } }] });
+  expect(f.loadAsync).toHaveBeenCalled();
+  expect(f.getNodeByIdAsync).not.toHaveBeenCalled();
+});
+
+it.each(['navigate_to_page', 'update_flows'])(
+  'preserves page capture errors for %s',
+  async tool => {
+    const f = unloadedPage();
+    const handler = createBatchHandler(f.figmaCtx, {
+      navigate_to_page: createNavigateToPageHandler(f.figmaCtx),
+      update_flows: createUpdateFlowsHandler(f.figmaCtx),
+    });
+    const run = (pageId: string) => handler({ ops: [{ tool, params: { pageId } }] });
+    await expect(run('missing')).rejects.toThrow(`batch/${tool}: node missing not found`);
+    f.getNodeByIdAsync.mockResolvedValue({ id: 'frame', type: 'FRAME' } as BaseNode);
+    await expect(run('frame')).rejects.toThrow(
+      tool === 'update_flows'
+        ? 'batch/update_flows: frame is not a page'
+        : 'batch/navigate_to_page: page frame not found',
+    );
+    f.getNodeByIdAsync.mockClear();
+    f.loadAsync.mockRejectedValue(new Error('contents unavailable'));
+    await expect(run(f.page.id)).rejects.toThrow(
+      'PageNode.loadAsync(P:2) failed: contents unavailable',
+    );
+    expect(f.getNodeByIdAsync).not.toHaveBeenCalled();
+    expect(f.figmaCtx.setCurrentPageAsync).not.toHaveBeenCalled();
+  },
+);
 
 /** A mutable node store backing a fake figma whose getNodeByIdAsync / createFrame share one map. */
 const MIXED = Symbol('mixed');
@@ -1463,8 +1502,21 @@ describe('batch inverses for the newly batchable writes', () => {
   it('navigates back to the page it started on', async () => {
     const { figmaCtx, store, pages } = makeWide();
     failingFrame(store);
-    store.set('P:1', { id: 'P:1', type: 'PAGE' });
-    store.set('P:2', { id: 'P:2', type: 'PAGE' });
+    store.set('P:1', {
+      id: 'P:1',
+      type: 'PAGE',
+      flowStartingPoints: [],
+      loadAsync: async () => {},
+    });
+    store.set('P:2', {
+      id: 'P:2',
+      type: 'PAGE',
+      flowStartingPoints: [],
+      loadAsync: async () => {},
+    });
+    Object.defineProperty(figmaCtx.root, 'children', {
+      get: () => [store.get('P:1'), store.get('P:2')],
+    });
     const handler = createBatchHandler(figmaCtx, {
       navigate_to_page: createNavigateToPageHandler(figmaCtx),
       set_fills: createSetFillsHandler(figmaCtx),

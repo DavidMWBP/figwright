@@ -3,6 +3,21 @@ import { describe, expect, it } from 'vitest';
 
 import { createSandboxHandlers } from '../src/handlers/registry.js';
 import { withInstanceIdLookup } from '../src/node-lookup.js';
+import { unloadedPage } from './page-fake.js';
+
+it('registry page handlers bypass the proxied by-id lookup', async () => {
+  const f = unloadedPage();
+  f.getNodeByIdAsync.mockRejectedValue(new Error('lookup unavailable'));
+  f.finish();
+  const handlers = createSandboxHandlers(f.figmaCtx);
+  expect(await handlers.rename_page!({ pageId: f.page.id, name: 'After' })).toEqual({
+    ok: true,
+    nodeId: f.page.id,
+  });
+  expect(f.page.name).toBe('After');
+  expect(f.loadAsync).toHaveBeenCalledOnce();
+  expect(f.getNodeByIdAsync).not.toHaveBeenCalled();
+});
 
 // Figma's own rejection, measured live while the by-id lookup was timing out: a bare string, not an Error.
 const BY_ID_TIMEOUT =

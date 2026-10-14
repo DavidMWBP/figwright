@@ -2,6 +2,18 @@ import type { ScanTextNodesResult } from '@figwright/shared';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createScanTextNodesHandler } from '../../src/handlers/scan-text-nodes.js';
+import { unloadedPage } from '../page-fake.js';
+
+it('loads a page from root.children before accessing it', async () => {
+  const f = unloadedPage();
+  const running = Promise.resolve(createScanTextNodesHandler(f.figmaCtx)({ root: f.page.id }));
+  void running.catch(() => {});
+  expect(f.loadAsync).toHaveBeenCalledOnce();
+  expect(f.getNodeByIdAsync).not.toHaveBeenCalled();
+  f.finish();
+  expect(((await running) as ScanTextNodesResult).nodes).toEqual([]);
+  expect(f.getNodeByIdAsync).not.toHaveBeenCalled();
+});
 
 // Every Date.now() read advances a fake clock by 1ms, so a time slice ends after a fixed number of
 // reads instead of after however much work this machine fits into 40 real milliseconds.
@@ -33,6 +45,7 @@ const fake = (
 
 const fakeFigma = (pageChildren: SceneNode[]): typeof figma =>
   ({
+    root: { children: [] },
     currentPage: { children: pageChildren },
     getNodeByIdAsync: async () => null,
   }) as unknown as typeof figma;

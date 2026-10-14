@@ -2,6 +2,20 @@ import type { ScanNodesByTypesResult } from '@figwright/shared';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createScanNodesByTypesHandler } from '../../src/handlers/scan-nodes-by-types.js';
+import { unloadedPage } from '../page-fake.js';
+
+it('loads a page from root.children before accessing it', async () => {
+  const f = unloadedPage();
+  const running = Promise.resolve(
+    createScanNodesByTypesHandler(f.figmaCtx)({ root: f.page.id, types: ['FRAME'] }),
+  );
+  void running.catch(() => {});
+  expect(f.loadAsync).toHaveBeenCalledOnce();
+  expect(f.getNodeByIdAsync).not.toHaveBeenCalled();
+  f.finish();
+  expect(((await running) as ScanNodesByTypesResult).nodes.map(n => n.id)).toEqual(['child']);
+  expect(f.getNodeByIdAsync).not.toHaveBeenCalled();
+});
 
 // Every Date.now() read advances a fake clock by 1ms, so a time slice ends after a fixed number of
 // reads instead of after however much work this machine fits into 40 real milliseconds.
@@ -30,6 +44,7 @@ const fakeFigma = (
   lookup: Record<string, BaseNode | null> = {},
 ): typeof figma =>
   ({
+    root: { children: Object.values(lookup).filter(n => n?.type === 'PAGE') },
     currentPage: { children: pageChildren },
     getNodeByIdAsync: async (id: string) => lookup[id] ?? null,
   }) as unknown as typeof figma;
@@ -68,7 +83,12 @@ describe('scan_nodes_by_types handler', () => {
         },
       }),
     );
-    const root = { type: 'PAGE', children: instances } as unknown as PageNode;
+    const root = {
+      id: '1:1',
+      type: 'PAGE',
+      children: instances,
+      loadAsync: async () => {},
+    } as unknown as PageNode;
     const handler = createScanNodesByTypesHandler(fakeFigma([], { '1:1': root }));
     const result = (await handler({ root: '1:1', types: ['INSTANCE'] })) as ScanNodesByTypesResult;
 
