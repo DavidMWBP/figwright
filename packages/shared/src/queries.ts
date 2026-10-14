@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import {
+  LookupErrorsSchema,
   PageRefSchema,
   SerializedAnnotationSchema,
   SerializedFontNameSchema,
@@ -69,14 +70,6 @@ export const ScreenshotImageSchema = z.object({
   bytes: ExportBytesSchema,
 });
 export type ScreenshotImage = z.infer<typeof ScreenshotImageSchema>;
-
-// Failed lookup occurrences use input indexes; they are omitted from images/saved rather than
-// confused with a resolved null (which keeps its non-exportable entry).
-const LookupErrorsSchema = z
-  .array(
-    z.object({ index: z.number().int().nonnegative(), nodeId: z.string(), message: z.string() }),
-  )
-  .optional();
 
 export const GetScreenshotResultSchema = z.object({
   images: z.array(ScreenshotImageSchema),

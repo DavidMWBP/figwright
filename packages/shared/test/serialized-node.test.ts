@@ -223,6 +223,29 @@ describe('GetNode / GetNodesInfo / GetMetadata / GetPages schemas', () => {
       lookupErrors: [{ index: 1, nodeId: '1:3', message: 'lookup rejected' }],
     };
     expect(GetNodesInfoResultSchema.parse(partial)).toEqual(partial);
+    const { GetScreenshotResultSchema, SaveScreenshotsResultSchema } =
+      await import('../src/queries.js');
+    for (const [schema, entries] of [
+      [GetNodesInfoResultSchema, { nodes: [] }],
+      [GetScreenshotResultSchema, { images: [] }],
+      [SaveScreenshotsResultSchema, { saved: [] }],
+    ] as const) {
+      expect(schema.parse(entries)).toEqual(entries);
+      expect(schema.parse({ ...entries, lookupErrors: [] })).toEqual({
+        ...entries,
+        lookupErrors: [],
+      });
+      expect(schema.parse({ ...entries, lookupErrors: partial.lookupErrors })).toEqual({
+        ...entries,
+        lookupErrors: partial.lookupErrors,
+      });
+      expect(
+        schema.safeParse({
+          ...entries,
+          lookupErrors: [{ index: -1, nodeId: '1:3', message: 'failed' }],
+        }).success,
+      ).toBe(false);
+    }
   });
 
   it('GetMetadataResult validates fileName + pages + currentPage + editor', async () => {
