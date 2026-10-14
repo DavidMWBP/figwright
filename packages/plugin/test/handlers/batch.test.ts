@@ -924,7 +924,11 @@ describe('batch handler', () => {
       await expect(failure).rejects.toThrow(
         /capture failed before any op was applied: .*Unable to establish connection/,
       );
-      if (wrapped) await expect(failure).rejects.toThrow('getNodeByIdAsync(offline)');
+      await expect(failure).rejects.toThrow(
+        wrapped
+          ? 'getNodeByIdAsync(offline)'
+          : 'Unable to establish connection to Figma after 10 seconds',
+      );
       expect(store.get('1:1')).toMatchObject({ name: 'A' });
     },
   );
