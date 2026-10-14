@@ -1,6 +1,7 @@
 import type { VideoExport, VideoFormat } from '@figwright/shared';
 
 import type { SandboxToolHandler } from '../dispatcher.js';
+import { figmaCall } from '../figma-call.js';
 
 type VideoSettings = ExportSettingsMP4 | ExportSettingsGIF | ExportSettingsWEBM;
 
@@ -67,7 +68,9 @@ export const createExportVideoHandler =
       return miss(p.nodeId, 'no-top-level-frame');
 
     try {
-      const bytes = await frame.exportAsync(buildVideoSettings(format, p));
+      const bytes = await figmaCall('exportAsync', frame.id, () =>
+        frame.exportAsync(buildVideoSettings(format, p)),
+      );
       // See get_screenshot: `binary` means the server lands these bytes on disk, so they skip base64.
       return p.binary === true
         ? { nodeId: frame.id, format, base64: null, bytes }

@@ -1,6 +1,7 @@
 import type { ComponentPropertyApiEntry, GetComponentApiResult } from '@figwright/shared';
 
 import type { SandboxToolHandler } from '../dispatcher.js';
+import { figmaCall } from '../figma-call.js';
 
 /**
  * Resolve a node to the one that owns the full property contract: a COMPONENT_SET as-is, a
@@ -15,7 +16,9 @@ const resolvePropertyOwner = async (
     return node.parent !== null && node.parent.type === 'COMPONENT_SET' ? node.parent : node;
   }
   if (node.type === 'INSTANCE') {
-    const main = await node.getMainComponentAsync();
+    const main = await figmaCall('getMainComponentAsync', node.id, () =>
+      node.getMainComponentAsync(),
+    );
     if (main === null) return null;
     return main.parent !== null && main.parent.type === 'COMPONENT_SET' ? main.parent : main;
   }

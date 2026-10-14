@@ -28,6 +28,14 @@ share a name — Figma allows that, and `x (Copy)` is how it happens). Every lat
 that file whatever is in front, including while its tab sits in the background. If the user has not
 said which file, ask — do not guess from the names.
 
+Failed Figma boundaries say `<call>(<target>) failed: <original message>`. The error suffix
+`answered by session <id>, file "<name>"` (and page when known) identifies the plugin that replied.
+`no session answered` means there was no reply; a routed session may still be named. Check that
+file and target before retrying. `Unable to establish connection` alone does not prove a lost
+session: follow the node lookup's health advice. A `ping` fallback with `hop: "server-only"`
+and `dispatchError` does not prove the routed file answered. Error codes, including
+`INTERNAL_ERROR`, and the version-skew notice retain their own meaning.
+
 ## Workflow
 
 Run the grounded tools against the selection, then generate — **trust them over the rendered image.**

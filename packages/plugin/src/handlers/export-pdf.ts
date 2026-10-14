@@ -1,6 +1,7 @@
 import type { PdfExport } from '@figwright/shared';
 
 import type { SandboxToolHandler } from '../dispatcher.js';
+import { figmaCall } from '../figma-call.js';
 
 const isExportable = (node: BaseNode): node is BaseNode & ExportMixin => 'exportAsync' in node;
 
@@ -28,7 +29,9 @@ export const createExportPdfHandler =
       return miss;
     }
 
-    const bytes = await node.exportAsync({ format: 'PDF' });
+    const bytes = await figmaCall('exportAsync', node.id, () =>
+      node.exportAsync({ format: 'PDF' }),
+    );
     // See get_screenshot: `binary` means the server lands these bytes on disk, so they skip base64.
     const result: PdfExport =
       p.binary === true

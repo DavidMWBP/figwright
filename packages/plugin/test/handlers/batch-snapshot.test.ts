@@ -10,7 +10,23 @@ import {
   restoreProps,
   same,
   writeIfDifferent,
+  resolveVariable,
 } from '../../src/handlers/batch-snapshot.js';
+import { withInstanceIdLookup } from '../../src/node-lookup.js';
+
+it('attributes a failed variable capture before any batch write', async () => {
+  const cause = new Error('unavailable');
+  const ctx = withInstanceIdLookup({
+    variables: {
+      getVariableByIdAsync: async () => {
+        throw cause;
+      },
+    },
+  } as unknown as typeof figma);
+  const error = await resolveVariable(ctx, 'V:2').catch(e => e);
+  expect(error.message).toBe('getVariableByIdAsync(V:2) failed: unavailable');
+  expect(error.cause).toBe(cause);
+});
 
 type Node = Record<string, unknown> & { id: string };
 

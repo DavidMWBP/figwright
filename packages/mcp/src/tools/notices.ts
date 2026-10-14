@@ -21,6 +21,7 @@ import type { CallToolResult } from '@modelcontextprotocol/server';
 export interface NoticeBox {
   skew: string | null;
   routing: string | null;
+  answer: string | null;
 }
 
 const store = new AsyncLocalStorage<NoticeBox>();
@@ -43,7 +44,7 @@ export const captureNotices = async (
   run: () => Promise<CallToolResult>,
   finish: (result: CallToolResult, notices: NoticeBox) => CallToolResult,
 ): Promise<CallToolResult> => {
-  const box: NoticeBox = { skew: null, routing: null };
+  const box: NoticeBox = { skew: null, routing: null, answer: null };
   try {
     const result = await store.run(box, run);
     return finish(result, box);
@@ -53,13 +54,28 @@ export const captureNotices = async (
     // tool is broken", so the agent goes looking for another way to do the same thing. The SDK
     // turns a thrown error into the tool result the model sees, so the message is where it has to
     // go; `finish` never runs on this path.
+    const message = err instanceof Error ? err.message : String(err);
+    // A failing sub-call knows its own session, even if another sub-call answered more recently.
+    const attributed =
+      message.includes('(answered by session ') || message.includes('(no session answered');
     const suffix =
+      (box.answer === null || attributed ? '' : ` ${box.answer}`) +
       (box.routing === null ? '' : asRoutingBlock(box.routing)) +
       (box.skew === null ? '' : asBlock(box.skew));
     if (suffix === '') throw err;
-    const message = err instanceof Error ? err.message : String(err);
+    // Attribution changes the message only; preserve a transport error's code and type.
+    if (err instanceof Error && box.routing === null && box.skew === null) {
+      err.message = `${message}${suffix}`;
+      throw err;
+    }
     throw new Error(`${message}${suffix}`, { cause: err });
   }
+};
+
+/** Record the last reply in this tool call, including a failed or unanswered dispatch. */
+export const reportAnswer = (attribution: string | null): void => {
+  const box = store.getStore();
+  if (box !== undefined && attribution !== null) box.answer = attribution;
 };
 
 /**

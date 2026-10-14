@@ -51,8 +51,24 @@ interface Pending {
   dispatchedToSessionId: string | undefined;
   // Filled with that session as the response lands, and read by the awaiting caller — per request,
   // so concurrent calls cannot observe each other's. See sendRequest's `onServed`.
-  served: { sessionId: string | undefined };
+  served: {
+    sessionId: string | undefined;
+    session?: Pick<Session, 'id' | 'fileName' | 'pageName'>;
+    answered?: boolean;
+  };
 }
+
+const attributionFor = (served: Pending['served']): string => {
+  const session = served.session;
+  const identity =
+    session === undefined
+      ? ''
+      : `session ${session.id}, file "${session.fileName ?? '(unknown)'}"` +
+        (session.pageName === null ? '' : `, page "${session.pageName}"`);
+  return served.answered
+    ? `(answered by ${identity})`
+    : `(no session answered${identity === '' ? '' : `; routed to ${identity}`})`;
+};
 
 export const DEFAULT_PLUGIN_REQUEST_TIMEOUT_MS = 30_000;
 
@@ -145,11 +161,11 @@ export class Relay {
      *   caller set up (`captureNotices`) is invisible from there — a callback fired at that point
      *   reaches nobody, which is precisely what shipped until an end-to-end test caught it.
      */
-    onServed?: (servingSessionId: string | undefined) => void,
+    onServed?: (servingSessionId: string | undefined, attribution: string) => void,
   ): Promise<unknown> {
     const id = newId();
     this.lastRequestAtMs = Date.now();
-    const served: { sessionId: string | undefined } = { sessionId: undefined };
+    const served: Pending['served'] = { sessionId: undefined };
     try {
       return await new Promise<unknown>((resolve, reject) => {
         const timer = setTimeout(() => {
@@ -206,12 +222,19 @@ export class Relay {
           this.opts.log(`[relay] queued ${method} (no plugin connected)`);
         }
       });
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      const attribution = attributionFor(served);
+      // The relay owns attribution for both direct and follower calls. Keep codes/prefixes intact.
+      const error = cause instanceof Error ? cause : new Error(message, { cause });
+      if (!message.endsWith(attribution)) error.message = `${message} ${attribution}`;
+      throw error;
     } finally {
       // In `finally`, so a failed call is attributed too. The loudest thing an out-of-date plugin
       // does is answer METHOD_NOT_FOUND for a tool it predates — nine of them for the last shipped
       // build — and an unattributed one reads as "this tool is broken", which is the same
       // misdirection as a silent wrong write, just noisier.
-      onServed?.(served.sessionId);
+      onServed?.(served.sessionId, attributionFor(served));
     }
   }
 
@@ -359,6 +382,12 @@ export class Relay {
     if (session.socket === null) return;
     entry.dispatched = true;
     entry.dispatchedToSessionId = session.id;
+    // Retain the session even if it closes before the request completes.
+    entry.served.session = {
+      id: session.id,
+      fileName: session.fileName,
+      pageName: session.pageName,
+    };
     session.socket.send(
       encodeEnvelope(
         createRequest({ id, sessionId: session.id, method: entry.method, params: entry.params }),
@@ -576,7 +605,13 @@ export class Relay {
         // Recorded, not dispatched: this runs in the socket's async context, where anything the
         // caller scoped to its own tool call is out of reach. sendRequest reports it after the
         // await instead.
-        p.served.sessionId = p.dispatchedToSessionId;
+        p.served.sessionId = session.id;
+        p.served.answered = true;
+        p.served.session = {
+          id: session.id,
+          fileName: session.fileName,
+          pageName: session.pageName,
+        };
         p.resolve(env.result);
       }
       return;
@@ -588,7 +623,13 @@ export class Relay {
         this.pending.delete(env.id);
         // Recorded on the error path too: a plugin that answers METHOD_NOT_FOUND for a tool it
         // predates is the most visible thing an out-of-date one does, and the least self-explaining.
-        p.served.sessionId = p.dispatchedToSessionId;
+        p.served.sessionId = session.id;
+        p.served.answered = true;
+        p.served.session = {
+          id: session.id,
+          fileName: session.fileName,
+          pageName: session.pageName,
+        };
         p.reject(new Error(`${env.error.code}: ${env.error.message}`));
       }
       return;

@@ -102,6 +102,44 @@ const helloResult = (overrides: Partial<HelloResult> = {}): HelloResult => ({
 });
 
 describe('RelayClient', () => {
+  it('keeps a boundary-attributed error intact on the wire', async () => {
+    const { WS, sockets } = buildFakeFactory(sock => {
+      sock.fireOpen();
+      const hello = decodeEnvelope(sock.sent[0]!) as RequestEnvelope;
+      sock.fireReceive(
+        createResponse({ id: hello.id, sessionId: hello.sessionId, result: helloResult() }),
+      );
+    });
+    const client = new RelayClient({ ports: [43001], clientVersion: '1.0.0', WS });
+    client.setToolHandler(async () => {
+      throw new Error('exportAsync(1:2) failed: unavailable');
+    });
+    await client.connect();
+    const socket = sockets[0]!;
+    const reply = new Promise<Envelope>(resolve => {
+      const send = socket.send.bind(socket);
+      socket.send = bytes => {
+        send(bytes);
+        const env = decodeEnvelope(bytes as Uint8Array);
+        if (env.kind === 'err') resolve(env);
+      };
+    });
+    try {
+      socket.fireReceive(
+        createRequest({
+          id: 'failed-export',
+          sessionId: client.sessionId,
+          method: 'get_screenshot',
+        }),
+      );
+      expect(await reply).toMatchObject({
+        kind: 'err',
+        error: { code: ErrorCode.Internal, message: 'exportAsync(1:2) failed: unavailable' },
+      });
+    } finally {
+      client.disconnect();
+    }
+  });
   it('connects, sends hello, and reaches connected state', async () => {
     const { WS, sockets } = buildFakeFactory(sock => {
       sock.fireOpen();

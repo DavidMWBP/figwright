@@ -5,7 +5,7 @@ import { type Node, NodeRole } from './election/node.js';
 import type { PluginSessionInfo } from './routing/sessions.js';
 import { getFileTarget, resolveFileTarget } from './routing/target.js';
 import { namedSessions, type SessionDispatch } from './tools/list-files.js';
-import { reportRouting, reportSkew } from './tools/notices.js';
+import { reportAnswer, reportRouting, reportSkew } from './tools/notices.js';
 
 export const DEFAULT_DISPATCH_MAX_ATTEMPTS = 3;
 export const DEFAULT_DISPATCH_RETRY_DELAY_MS = 1_500;
@@ -96,7 +96,10 @@ export const dispatchTool = async (
             args,
             opts.perCallTimeoutMs ?? getRelayBudget(toolName, args),
             opts.sessionId,
-            served => reportSkew(leader.relay.skewNotice(served)),
+            (served, attribution) => {
+              reportSkew(leader.relay.skewNotice(served));
+              reportAnswer(attribution ?? null);
+            },
           );
           return result;
         } catch (err) {
@@ -115,6 +118,7 @@ export const dispatchTool = async (
         opts.perCallTimeoutMs ?? getFollowerBudget(toolName, args),
         conflicted.signal,
       );
+      reportAnswer(resp.attribution ?? null);
       if (resp.kind === 'ok') {
         reportSkew(resp.notice ?? null);
         return resp.result;
@@ -123,9 +127,13 @@ export const dispatchTool = async (
       // 'relay stopping' is the leader rejecting the call because it's shutting down or abdicating —
       // by the retry delay a new leader (possibly this very node) has the port, so it's as transient
       // as a dropped connection. Safe to replay: writes carry a stable requestId the plugin dedupes.
+      const originalMessage =
+        resp.attribution !== undefined && resp.message.endsWith(resp.attribution)
+          ? resp.message.slice(0, -resp.attribution.length).trimEnd()
+          : resp.message;
       const isTransient =
         resp.code === ErrorCode.Internal &&
-        /transport|fetch failed|ECONNREFUSED|relay stopping/i.test(resp.message);
+        /transport|fetch failed|ECONNREFUSED|relay stopping/i.test(originalMessage);
       if (!isTransient || attempt === maxAttempts - 1) {
         throw new DispatchError(resp.code, resp.message);
       }
@@ -139,6 +147,16 @@ export const dispatchTool = async (
 
     if (lastError !== null) throw lastError;
     throw new DispatchError(ErrorCode.Internal, 'dispatch exhausted retries');
+  } catch (cause) {
+    const error = cause instanceof Error ? cause : new Error(String(cause), { cause });
+    if (
+      !error.message.includes('(answered by session ') &&
+      !error.message.includes('(no session answered')
+    ) {
+      error.message += ' (no session answered)';
+      reportAnswer('(no session answered)');
+    }
+    throw error;
   } finally {
     stopWatching();
   }
