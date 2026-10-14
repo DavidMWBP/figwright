@@ -34,7 +34,12 @@ export const saveScreenshotsTool: ToolSpec = {
     'path is null for missing or non-exportable nodes. Nodes that are fully clipped or off-canvas ' +
     "(e.g. a carousel's edge items) are auto-recovered at their intrinsic bounds and flagged recovered:true. " +
     'empty:true means the node genuinely renders nothing even unclipped (hidden / no content) so the file is blank. ' +
-    'Files are named after a sanitized node id.',
+    'Files are named after a sanitized node id. Rejected lookups are omitted from saved and reported in ' +
+    'lookupErrors: [{ index, nodeId, message }] with zero-based input indexes, including duplicates and all-failed calls. ' +
+    'Successful files are kept. A rejection is not proof of a missing id. One loaded-page probe is shared per call: ' +
+    'if it works, the target failed while the session answered other reads; the id may be missing, deleted, ' +
+    'on a page not loaded, or not yet synced from another client. A plugin reload is not indicated; try reading its parent. ' +
+    'If the probe also fails, the session is not answering reads; reload the plugin. Export and disk errors still fail the call.',
   inputSchema,
   kind: 'local',
   // No sandbox handler of its own; its plugin arguments are recorded under the tool it reuses.
@@ -94,9 +99,11 @@ export const handleSaveScreenshots = async (
   // model consumption, but files written to disk are user artifacts and must stay full-res.
   screenshotArgs.scale = args.scale ?? 1;
 
-  const { images } = (await dispatch(
+  const { images, lookupErrors } = (await dispatch(
     GET_SCREENSHOT_TOOL_NAME,
     screenshotArgs,
   )) as GetScreenshotResult;
-  return writeScreenshots(args.outDir, images);
+  const result = await writeScreenshots(args.outDir, images);
+  if (lookupErrors !== undefined) result.lookupErrors = lookupErrors;
+  return result;
 };

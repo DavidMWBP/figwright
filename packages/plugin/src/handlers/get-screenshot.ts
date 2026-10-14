@@ -6,6 +6,8 @@ import {
 } from '@figwright/shared';
 
 import type { SandboxToolHandler } from '../dispatcher.js';
+import { figmaCall } from '../figma-call.js';
+import { retryRead } from '../read-retry.js';
 
 const isFormat = (value: unknown): value is ScreenshotFormat =>
   typeof value === 'string' && (SCREENSHOT_FORMATS as readonly string[]).includes(value);
@@ -170,9 +172,20 @@ export const createGetScreenshotHandler =
     // oversized ones. Disk exports aren't sent to a provider, so they keep the full ceiling.
     const ceiling =
       forVision && ids.length > MANY_IMAGE_THRESHOLD ? MANY_IMAGE_LONG_EDGE : VISION_LONG_EDGE;
-    const images: ScreenshotImage[] = await Promise.all(
-      ids.map(async (nodeId): Promise<ScreenshotImage> => {
-        const node = await figmaCtx.getNodeByIdAsync(nodeId);
+    const lookupErrors: NonNullable<GetScreenshotResult['lookupErrors']> = [];
+    const slots = await Promise.all(
+      ids.map(async (nodeId, index): Promise<ScreenshotImage | null> => {
+        let node: BaseNode | null;
+        try {
+          node = await figmaCtx.getNodeByIdAsync(nodeId);
+        } catch (cause) {
+          lookupErrors.push({
+            index,
+            nodeId,
+            message: cause instanceof Error ? cause.message : String(cause),
+          });
+          return null;
+        }
         if (node === null || !isExportable(node)) return { nodeId, format, base64: null };
 
         const geom = node as unknown as ClipGeometry;
@@ -186,7 +199,9 @@ export const createGetScreenshotHandler =
           // bounding box, else give up on fitting/reporting and export at 1x like before.
           const box = geom.absoluteRenderBounds ?? geom.absoluteBoundingBox;
           const scale = resolveScale(box, requestedScale, forVision, true, ceiling);
-          const bytes = await node.exportAsync(makeSettings(false, scale));
+          const bytes = await figmaCall('exportAsync', nodeId, () =>
+            retryRead(figmaCtx, () => node.exportAsync(makeSettings(false, scale))),
+          );
           const image = exported(nodeId, bytes);
           attachRasterDims(image, box, scale);
           return image;
@@ -202,7 +217,9 @@ export const createGetScreenshotHandler =
           geom.visible !== false && box != null && box.width > 0 && box.height > 0;
         // A blank isn't worth fitting — keep it at 1x unless the caller asked for a scale.
         const scale = resolveScale(box, requestedScale, forVision, recoverable, ceiling);
-        const bytes = await node.exportAsync(makeSettings(recoverable, scale));
+        const bytes = await figmaCall('exportAsync', nodeId, () =>
+          retryRead(figmaCtx, () => node.exportAsync(makeSettings(recoverable, scale))),
+        );
         const image = exported(nodeId, bytes);
         if (recoverable) image.recovered = true;
         else image.empty = true;
@@ -211,6 +228,8 @@ export const createGetScreenshotHandler =
       }),
     );
 
-    const result: GetScreenshotResult = { images };
+    const result: GetScreenshotResult = { images: slots.filter(image => image !== null) };
+    if (lookupErrors.length > 0)
+      result.lookupErrors = lookupErrors.toSorted((a, b) => a.index - b.index);
     return result;
   };

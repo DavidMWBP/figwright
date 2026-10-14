@@ -1,6 +1,11 @@
 import type { BatchResult, FlowStartingPoint } from '@figwright/shared';
+import { BATCH_ROLLBACK_RESERVE_MS, getToolBudget } from '@figwright/shared';
 
+import type { BatchProgress } from '../../protocol/bridge.js';
 import type { SandboxHandlers, SandboxToolHandler } from '../dispatcher.js';
+import { figmaCall } from '../figma-call.js';
+import { loadPage } from '../page-lookup.js';
+import { getReadRetryState } from '../read-retry.js';
 import {
   captureOverrideGuard,
   type InstanceGuard,
@@ -43,7 +48,11 @@ import {
 import { readFlows, sameFlows } from './update-flows.js';
 
 /**
- * Atomic batch: apply several invertible write ops as a unit. Two phases —
+ * Batch with rollback: all-or-nothing when the call answers, except for reported undo failures or
+ * residue. A stop for time rolls back applied ops and reports how it went. A bridge timeout names
+ * the last reported completed indexes and an unknown outcome; read back before retrying.
+ *
+ * Two phases — capture and apply:
  *
  * 1. Capture (read-only): resolve every op's target and snapshot what undo needs. Any failure here
  *    aborts before a single mutation, so a bad op id never leaves the document half-changed.
@@ -153,7 +162,9 @@ const propsInverse = (
 ): BatchInverse => ({
   async capture(figmaCtx, params) {
     const id = stringParam(params, opts.idKey ?? 'nodeId', tool);
-    const node = await nodeOf(figmaCtx, id, tool);
+    const node =
+      tool === 'rename_page' ? await loadPage(figmaCtx, id) : await nodeOf(figmaCtx, id, tool);
+    if (node === null) throw new Error(`batch/${tool}: node ${id} not found`);
     const required = props[0]!;
     if (!(required in node)) throw new Error(`batch/${tool}: node ${id} has no ${required}`);
     const state: PropsState = {
@@ -884,7 +895,9 @@ const swapBack = async (
   instance: InstanceNode,
   mainId: string,
 ): Promise<void> => {
-  const main = await instance.getMainComponentAsync();
+  const main = await figmaCall('getMainComponentAsync', instance.id, () =>
+    instance.getMainComponentAsync(),
+  );
   if (main?.id === mainId) return;
   const component = await figmaCtx.getNodeByIdAsync(mainId);
   if (component?.type !== 'COMPONENT') throw new Error(`component ${mainId} no longer exists`);
@@ -914,7 +927,9 @@ const instancePropsInverse: BatchInverse = {
       const prop = current[key];
       if (prop !== undefined) previous[key] = prop.boundVariables?.value ?? prop.value;
     }
-    const main = await instance.getMainComponentAsync();
+    const main = await figmaCall('getMainComponentAsync', instance.id, () =>
+      instance.getMainComponentAsync(),
+    );
     if (main === null) {
       throw new Error(
         `batch/set_instance_properties: ${instance.id} has no main component to return to`,
@@ -945,7 +960,9 @@ const instancePropsInverse: BatchInverse = {
 const swapInverse: BatchInverse = {
   async capture(figmaCtx, params) {
     const instance = await instanceOf(figmaCtx, params, 'swap_component');
-    const main = await instance.getMainComponentAsync();
+    const main = await figmaCall('getMainComponentAsync', instance.id, () =>
+      instance.getMainComponentAsync(),
+    );
     if (main === null) {
       throw new Error(`batch/swap_component: ${instance.id} has no main component to swap back to`);
     }
@@ -1342,8 +1359,11 @@ const restoreFlows = (figmaCtx: typeof figma, before: FlowsSnapshot): string[] =
 const updateFlowsInverse: BatchInverse = {
   async capture(figmaCtx, params) {
     const pageId = stringParam(params, 'pageId', 'update_flows');
-    const page = await nodeOf(figmaCtx, pageId, 'update_flows');
-    if (page.type !== 'PAGE') throw new Error(`batch/update_flows: ${pageId} is not a page`);
+    const page = await loadPage(figmaCtx, pageId);
+    if (page === null) {
+      await nodeOf(figmaCtx, pageId, 'update_flows');
+      throw new Error(`batch/update_flows: ${pageId} is not a page`);
+    }
     return null;
   },
   undo: async () => undefined,
@@ -1440,7 +1460,10 @@ const bindPropertyInverse: BatchInverse = {
     const id = stringParam(params, 'nodeId', 'bind_component_property');
     const field = stringParam(params, 'field', 'bind_component_property');
     const node = (await nodeOf(figmaCtx, id, 'bind_component_property')) as Referencing;
-    const main = node.type === 'INSTANCE' ? await node.getMainComponentAsync() : null;
+    const main =
+      node.type === 'INSTANCE'
+        ? await figmaCall('getMainComponentAsync', node.id, () => node.getMainComponentAsync())
+        : null;
     const state: BindPropertyState = {
       id,
       field,
@@ -1494,15 +1517,18 @@ const reactionsInverse = (tool: string): BatchInverse => ({
 const navigateInverse: BatchInverse = {
   async capture(figmaCtx, params) {
     const id = stringParam(params, 'pageId', 'navigate_to_page');
-    const page = await nodeOf(figmaCtx, id, 'navigate_to_page');
-    if (page.type !== 'PAGE') throw new Error(`batch/navigate_to_page: page ${id} not found`);
+    const page = await loadPage(figmaCtx, id);
+    if (page === null) {
+      await nodeOf(figmaCtx, id, 'navigate_to_page');
+      throw new Error(`batch/navigate_to_page: page ${id} not found`);
+    }
     return { previous: figmaCtx.currentPage.id };
   },
   async undo(figmaCtx, _params, captured) {
     const { previous } = captured as { previous: string };
     if (figmaCtx.currentPage.id === previous) return undefined;
-    const page = await figmaCtx.getNodeByIdAsync(previous);
-    if (page?.type === 'PAGE') await figmaCtx.setCurrentPageAsync(page);
+    const page = await loadPage(figmaCtx, previous);
+    if (page !== null) await figmaCtx.setCurrentPageAsync(page);
     return undefined;
   },
 };
@@ -1512,7 +1538,7 @@ const navigateInverse: BatchInverse = {
 // hot-path. apply_animation_style undoes via the appliedStyleId the apply returns; a PROPERTY
 // keyframe track round-trips through a deep-cloned snapshot. Indexed
 // fills/strokes/effects tracks have no faithful snapshot yet, so they're rejected up front (same
-// honesty stance as create_component's fromNodeId) to keep all-or-nothing real. All gate on the
+// honesty stance as create_component's fromNodeId) to keep rollback faithful. All gate on the
 // Figma editor.
 
 const applyAnimationStyleInverse: BatchInverse = {
@@ -1797,7 +1823,7 @@ const INVERSES: Readonly<Record<string, BatchInverse>> = {
   update_flows: updateFlowsInverse,
   rename_page: propsInverse('rename_page', ['name'], { idKey: 'pageId' }),
   navigate_to_page: navigateInverse,
-  // Motion (beta) — staggered authoring in one atomic, undoable call.
+  // Motion (beta) — staggered authoring in one call with rollback and timeout progress.
   apply_animation_style: applyAnimationStyleInverse,
   apply_manual_keyframe_track: keyframeTrackInverse('apply_manual_keyframe_track'),
   set_timeline_duration: setTimelineDurationInverse,
@@ -1873,6 +1899,7 @@ const SELF_DELETING = new Set(['GROUP', 'BOOLEAN_OPERATION', 'COMPONENT_SET']);
 const refuseEmptiedContainers = async (
   figmaCtx: typeof figma,
   ops: readonly ParsedOp[],
+  progress: (inFlight: number[]) => void,
 ): Promise<void> => {
   const leaving = new Map<
     string,
@@ -1882,6 +1909,7 @@ const refuseEmptiedContainers = async (
   for (const [i, op] of ops.entries()) {
     const moves = INVERSES[op.tool]!.moves;
     if (moves === undefined) continue;
+    progress([i]);
     const { nodeIds, destinationId } = await moves(figmaCtx, op.params);
     for (const id of nodeIds) {
       const node = await figmaCtx.getNodeByIdAsync(id);
@@ -1897,6 +1925,7 @@ const refuseEmptiedContainers = async (
       entry.ops.add(`op ${i} (${op.tool})`);
       leaving.set(parent.id, entry);
     }
+    progress([]);
   }
   /* eslint-enable no-await-in-loop */
   for (const { container, ids, ops: by } of leaving.values()) {
@@ -1952,19 +1981,46 @@ const undoOp = async (
  */
 export const createBatchHandler =
   (figmaCtx: typeof figma, apply: SandboxHandlers): SandboxToolHandler =>
-  async params => {
+  async (params, context) => {
+    // Read the clock before capture too: its awaits consume the same call budget as apply.
+    const stopAt = Date.now() + getToolBudget('batch', params) - BATCH_ROLLBACK_RESERVE_MS;
+    const retryState = getReadRetryState(figmaCtx);
+    if (retryState !== undefined) retryState.stopAt = stopAt;
     const ops = parseOps(params);
     for (const op of ops) {
       if (apply[op.tool] === undefined) throw new Error(`batch: no handler for op '${op.tool}'`);
     }
-    await refuseEmptiedContainers(figmaCtx, ops);
+    const completed: number[] = [];
+    const rolledBack: number[] = [];
+    const progress = (phase: BatchProgress['phase'], inFlight: number[]): void => {
+      // Copy each snapshot: later completions must not rewrite an already-reported state.
+      context?.progress({
+        phase,
+        completed: [...completed],
+        inFlight: [...inFlight],
+        rolledBack: [...rolledBack],
+      });
+    };
+    progress('capture', []);
+    await refuseEmptiedContainers(figmaCtx, ops, inFlight => progress('capture', inFlight));
 
     // Phase 1 — capture (read-only). Reads are independent, so resolve them together. A Figma API
     // can reject with a bare string or a contextual lookup Error; preserve the message and say
     // nothing was applied yet.
     let captured: Captured[];
+    const capturing = new Set(ops.map((_, i) => i));
+    progress('capture', [...capturing]);
     try {
-      captured = await Promise.all(ops.map(async op => captureOp(figmaCtx, op)));
+      captured = await Promise.all(
+        ops.map(async (op, i) => {
+          try {
+            return await captureOp(figmaCtx, op);
+          } finally {
+            capturing.delete(i);
+            progress('capture', [...capturing]);
+          }
+        }),
+      );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       throw new Error(`batch: capture failed before any op was applied: ${message}`, {
@@ -1972,28 +2028,41 @@ export const createBatchHandler =
       });
     }
     const flowsBefore = captureFlows(figmaCtx);
+    // Capture may retry reads; apply and undo keep their original latency and never retry.
+    if (retryState !== undefined) retryState.enabled = false;
 
     // Phase 2 — apply in order; roll back already-applied ops on the first failure.
     const results: unknown[] = [];
     /* eslint-disable no-await-in-loop -- apply order is significant and rollback needs partial results */
     for (let i = 0; i < ops.length; i += 1) {
       const op = ops[i]!;
+      const stoppedForTime = Date.now() >= stopAt;
       try {
+        // Never race rollback against an in-flight Figma await. This check runs only after the
+        // preceding apply has settled; the reserve is best effort, not a bound on Figma latency.
+        if (stoppedForTime) throw new Error('rollback reserve reached');
+        progress('apply', [i]);
         results.push(await apply[op.tool]!(op.params));
+        completed.push(i);
+        progress('apply', []);
       } catch (err) {
         // Unwind applied ops in reverse. Keep going even if one undo throws, but record which ones
         // failed — and which restored with residue — so the error never claims a clean rollback
         // that didn't happen.
         const undoFailures: string[] = [];
         const residue: string[] = [];
+        progress('rollback', []);
         for (let j = i - 1; j >= 0; j -= 1) {
+          progress('rollback', [j]);
           try {
             const note = await undoOp(figmaCtx, ops[j]!, captured[j]!, results[j]);
             if (note !== undefined) residue.push(`op ${j} (${ops[j]!.tool}): ${note}`);
+            else rolledBack.push(j);
           } catch (undoErr) {
             const m = undoErr instanceof Error ? undoErr.message : String(undoErr);
             undoFailures.push(`op ${j} (${ops[j]!.tool}): ${m}`);
           }
+          progress('rollback', []);
         }
         for (const note of restoreFlows(figmaCtx, flowsBefore)) residue.push(`flows: ${note}`);
         const message = err instanceof Error ? err.message : String(err);
@@ -2003,7 +2072,12 @@ export const createBatchHandler =
             : `rolled back ${i - undoFailures.length}/${i} op(s); ${undoFailures.length} undo(s) FAILED [${undoFailures.join('; ')}] — document may be partially changed`;
         const leftover =
           residue.length === 0 ? '' : ` (restored with residue: ${residue.join('; ')})`;
-        throw new Error(`batch: op ${i} (${op.tool}) failed, ${rollback}${leftover}: ${message}`, {
+        const failure = stoppedForTime
+          ? i === 0
+            ? 'stopped for time before op 0; nothing was applied'
+            : `stopped for time after op ${i - 1} (indexes are zero-based)`
+          : `op ${i} (${op.tool}) failed`;
+        throw new Error(`batch: ${failure}, ${rollback}${leftover}: ${message}`, {
           cause: err,
         });
       }

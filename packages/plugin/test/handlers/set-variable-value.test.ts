@@ -1,12 +1,30 @@
 import type { VariableResult } from '@figwright/shared';
 import { describe, expect, it, vi } from 'vitest';
 
+import { createSandboxHandlers } from '../../src/handlers/registry.js';
 import { createSetVariableValueHandler } from '../../src/handlers/set-variable-value.js';
 
 const fakeFigma = (variable: unknown): typeof figma =>
   ({ variables: { getVariableByIdAsync: async () => variable } }) as unknown as typeof figma;
 
 describe('set_variable_value handler', () => {
+  it('attributes variable lookup rejection through the registry', async () => {
+    const cause = new Error('unavailable');
+    const handlers = createSandboxHandlers({
+      variables: {
+        getVariableByIdAsync: async () => {
+          throw cause;
+        },
+      },
+    } as unknown as typeof figma);
+    const error = await Promise.resolve(
+      handlers.set_variable_value!({ variableId: 'V:2', modeId: 'M:2', value: 1 }),
+    ).catch(e => e);
+    expect(error).toMatchObject({
+      message: 'getVariableByIdAsync(V:2) failed: unavailable',
+      cause,
+    });
+  });
   it('sets a color value for a mode (RGB normalised to RGBA pass-through)', async () => {
     const setValueForMode = vi.fn<() => void>();
     const variable = { id: 'V:0', name: 'color/primary', setValueForMode };

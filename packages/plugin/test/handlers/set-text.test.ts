@@ -1,8 +1,33 @@
 import type { MutateResult } from '@figwright/shared';
 import { describe, expect, it, vi } from 'vitest';
 
+import { createSandboxHandlers } from '../../src/handlers/registry.js';
 import { createSetTextHandler } from '../../src/handlers/set-text.js';
 import { makeText } from './text-fake.js';
+
+it('attributes a failed font load and leaves text unchanged', async () => {
+  const cause = new Error('unavailable');
+  const node = {
+    id: '1:2',
+    type: 'TEXT',
+    fontName: { family: 'Example Sans', style: 'Regular' },
+    characters: 'Before',
+  };
+  const handlers = createSandboxHandlers({
+    getNodeByIdAsync: async () => node,
+    loadFontAsync: async () => {
+      throw cause;
+    },
+  } as unknown as typeof figma);
+  const error = await Promise.resolve(
+    handlers.set_text!({ nodeId: '1:2', characters: 'After' }),
+  ).catch(e => e);
+  expect(error).toMatchObject({
+    message: 'loadFontAsync(Example Sans Regular) failed: unavailable',
+    cause,
+  });
+  expect(node.characters).toBe('Before');
+});
 
 const MIXED = Symbol('figma.mixed');
 

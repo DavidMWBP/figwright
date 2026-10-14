@@ -1,14 +1,23 @@
 import type { GetNodesInfoResult } from '@figwright/shared';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createGetNodesInfoHandler } from '../../src/handlers/get-nodes-info.js';
+import { createSandboxHandlers } from '../../src/handlers/registry.js';
 import { withInstanceIdLookup } from '../../src/node-lookup.js';
+import { CONNECTION_ERROR } from '../read-retry-fake.js';
 
 const timeout =
   'Unable to establish connection to Figma after 10 seconds. Please check your internet connection.';
 
-const rejectingHandler = () =>
-  createGetNodesInfoHandler(
+beforeEach(() => {
+  vi.useFakeTimers();
+});
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+const rejectingHandler = () => {
+  const handler = createGetNodesInfoHandler(
     withInstanceIdLookup({
       getNodeByIdAsync: async (id: string) => {
         if (id === '1:3') return null;
@@ -17,6 +26,14 @@ const rejectingHandler = () =>
       },
     } as unknown as typeof figma),
   );
+  return async (params: unknown): Promise<unknown> => {
+    const reading = Promise.resolve(handler(params));
+    const observed = reading.catch(error => error);
+    await vi.runAllTimersAsync();
+    await observed;
+    return reading;
+  };
+};
 
 const fake = (overrides: Record<string, unknown> = {}): SceneNode =>
   ({
@@ -39,6 +56,55 @@ const fakeFigma = (lookup: Record<string, BaseNode | null>): typeof figma =>
   }) as unknown as typeof figma;
 
 describe('get_nodes_info handler', () => {
+  it.each([
+    ['1:2', '8:8', '1:4'],
+    ['8:8', '8:9', '8:8'],
+  ])('probes once for a multi-id call: %j', async (...nodeIds) => {
+    const lookup = vi.fn<(id: string) => Promise<BaseNode | null>>(async id => {
+      if (id === '0:1') return { id, type: 'PAGE' } as BaseNode;
+      if (id.startsWith('8:')) throw new Error('target rejected');
+      return fake({ id });
+    });
+    const result = (await createSandboxHandlers({
+      currentPage: { id: '0:1' },
+      getNodeByIdAsync: lookup,
+    } as unknown as typeof figma).get_nodes_info!({ nodeIds })) as GetNodesInfoResult;
+    expect(result.nodes.map(n => n?.id ?? null)).toEqual(
+      nodeIds.map(id => (id.startsWith('8:') ? null : id)),
+    );
+    const message = expect.stringContaining('session answered other reads');
+    expect(result.lookupErrors).toEqual(
+      nodeIds.flatMap((nodeId, index) =>
+        nodeId.startsWith('8:') ? [{ index, nodeId, message }] : [],
+      ),
+    );
+    expect(lookup.mock.calls.filter(([id]) => id === '0:1')).toHaveLength(1);
+  });
+  it('caps retries across twenty failing ids and resets the cap for the next call', async () => {
+    vi.useFakeTimers();
+    try {
+      const lookup = vi
+        .fn<(id: string) => Promise<BaseNode | null>>()
+        .mockRejectedValue(CONNECTION_ERROR);
+      const handler = createSandboxHandlers({
+        getNodeByIdAsync: lookup,
+      } as unknown as typeof figma).get_nodes_info!;
+      const ids = Array.from({ length: 20 }, (_, i) => `1:${i}`);
+      for (const calls of [23, 46]) {
+        const reading = Promise.resolve(handler({ nodeIds: ids })).catch(error => error);
+        await vi.runAllTimersAsync();
+        const result = (await reading) as GetNodesInfoResult;
+        expect(result.nodes).toEqual(ids.map(() => null));
+        expect(result.lookupErrors).toHaveLength(20);
+        expect(result.lookupErrors?.some(error => /retry cap reached/i.test(error.message))).toBe(
+          true,
+        );
+        expect(lookup).toHaveBeenCalledTimes(calls);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it('keeps other results when one lookup rejects', async () => {
     const result = (await rejectingHandler()({
       nodeIds: ['1:4', '8:8', '1:2'],
@@ -57,12 +123,17 @@ describe('get_nodes_info handler', () => {
   });
 
   it.each([{ nodeIds: ['8:8'] }, { nodeIds: ['8:8', '8:9'] }])(
-    'throws the contextual lookup error when every id rejects: $nodeIds',
+    'keeps every error slot when every id rejects: $nodeIds',
     async ({ nodeIds }) => {
-      await expect(rejectingHandler()({ nodeIds })).rejects.toMatchObject({
-        message: expect.stringContaining('getNodeByIdAsync(8:8)'),
-        cause: timeout,
-      });
+      const result = (await rejectingHandler()({ nodeIds })) as GetNodesInfoResult;
+      expect(result.nodes).toEqual(nodeIds.map(() => null));
+      expect(result.lookupErrors).toEqual(
+        nodeIds.map((nodeId, index) => ({
+          index,
+          nodeId,
+          message: expect.stringContaining(timeout),
+        })),
+      );
     },
   );
 

@@ -16,6 +16,7 @@ import {
 } from '@figwright/shared';
 
 import type { SandboxToolHandler } from '../dispatcher.js';
+import { figmaCall } from '../figma-call.js';
 import { serializeCodeSyntax, serializeFlatSync } from '../serializer.js';
 
 const isSceneNode = (node: BaseNode): node is SceneNode =>
@@ -638,7 +639,9 @@ const buildNode = async (
   // component_map). componentProperties on the instance itself are surfaced in project() and survive
   // dedup — only the expanded child subtree below is collapsed.
   if (node.type === 'INSTANCE' && (ctx.dedupe || ctx.detail === 'full')) {
-    const main = await (node as InstanceNode).getMainComponentAsync();
+    const main = await figmaCall('getMainComponentAsync', node.id, () =>
+      (node as InstanceNode).getMainComponentAsync(),
+    );
     if (main !== null) {
       out.mainComponentId = main.id;
       if (ctx.detail === 'full') {

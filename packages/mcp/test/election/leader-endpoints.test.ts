@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events';
 import { createServer, type Server as HttpServer, request as httpRequest } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
@@ -16,8 +17,9 @@ import {
   RpcResponseSchema,
   SystemMethod,
 } from '@figwright/shared';
+import { createError } from '@figwright/shared';
 import { decode, encode } from '@msgpack/msgpack';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket } from 'ws';
 
 import {
@@ -29,6 +31,7 @@ import {
   RPC_PATH,
 } from '../../src/election/leader-endpoints.js';
 import { Relay } from '../../src/relay/relay.js';
+import { fakeRelay } from '../relay-fake.js';
 
 interface Bound {
   http: HttpServer;
@@ -53,7 +56,7 @@ afterEach(async () => {
 });
 
 const startLeader = async (
-  rpcTimeoutMs = 5_000,
+  rpcTimeoutMs: number | null = 5_000,
   extraDeps: Partial<LeaderEndpointDeps> = {},
 ): Promise<Bound> => {
   const http = createServer();
@@ -63,7 +66,7 @@ const startLeader = async (
   const detach = attachLeaderEndpoints(http, {
     relay,
     serverVersion: '1.0.0',
-    rpcTimeoutMs,
+    ...(rpcTimeoutMs === null ? {} : { rpcTimeoutMs }),
     ...extraDeps,
   });
   const b: Bound = { http, relay, port, detach, plugins: [] };
@@ -141,6 +144,93 @@ const callRpc = async (port: number, req: RpcRequest): Promise<RpcResponse> => {
 };
 
 describe('leader endpoints', () => {
+  it.each(['error', 'success'])(
+    'preserves answering-session attribution across the follower RPC %s response',
+    async outcome => {
+      const { relay, connect, http } = fakeRelay();
+      const plugin = connect('session-a', 'Draft timeout α');
+      const detach = attachLeaderEndpoints(http, { relay, serverVersion: '1.0.0' });
+      const req = Object.assign(new EventEmitter(), {
+        method: 'POST',
+        url: RPC_PATH,
+        headers: { host: '127.0.0.1:43001', 'content-type': 'application/msgpack' },
+      });
+      const response = new Promise<RpcResponse>(resolve => {
+        const res = {
+          writeHead: () => {},
+          end: (bytes: Uint8Array) => resolve(RpcResponseSchema.parse(decode(bytes))),
+        };
+        http.emit('request', req, res);
+      });
+      try {
+        req.emit(
+          'data',
+          Buffer.from(
+            encode({
+              requestId: 'r',
+              toolName: 'get_node',
+              args: { nodeId: '1:2' },
+              sessionId: 'session-a',
+            }),
+          ),
+        );
+        req.emit('end');
+        const request = await plugin.request;
+        plugin.receive(
+          outcome === 'success'
+            ? createResponse({ id: request.id, sessionId: 'session-a', result: {} })
+            : createError({
+                id: request.id,
+                sessionId: 'session-a',
+                code: ErrorCode.Internal,
+                message: 'getNodeByIdAsync(1:2) failed: unavailable',
+              }),
+        );
+        const expected =
+          outcome === 'success'
+            ? {
+                kind: 'ok',
+                requestId: 'r',
+                result: {},
+                attribution: '(answered by session session-a, file "Draft timeout α")',
+              }
+            : {
+                kind: 'err',
+                requestId: 'r',
+                code: ErrorCode.Internal,
+                message:
+                  'INTERNAL_ERROR: getNodeByIdAsync(1:2) failed: unavailable (answered by session session-a, file "Draft timeout α")',
+                attribution: '(answered by session session-a, file "Draft timeout α")',
+              };
+        expect(await response).toEqual(expected);
+      } finally {
+        detach();
+        await relay.stop();
+      }
+    },
+  );
+  it('uses the op-count relay budget for forwarded calls and preserves overrides', async () => {
+    for (const override of [undefined, 17]) {
+      const b = await startLeader(override ?? null);
+      const send = vi.spyOn(b.relay, 'sendRequest').mockResolvedValue({ ok: true });
+      const args = {
+        ops: Array.from({ length: 12 }, () => ({
+          tool: 'rename_node',
+          params: { nodeId: '1:1', name: 'sample' },
+        })),
+      };
+      expect(await callRpc(b.port, { toolName: 'batch', args, requestId: 'r' })).toMatchObject({
+        kind: 'ok',
+      });
+      expect(send).toHaveBeenCalledWith(
+        'batch',
+        args,
+        override ?? 245_000,
+        undefined,
+        expect.any(Function),
+      );
+    }
+  });
   it('GET /ping returns server info and plugin count', async () => {
     const b = await startLeader();
     const res = await fetch(`http://127.0.0.1:${b.port}${PING_PATH}`);

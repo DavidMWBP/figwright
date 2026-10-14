@@ -1,7 +1,9 @@
 import type { GetScreenshotResult } from '@figwright/shared';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createGetScreenshotHandler } from '../../src/handlers/get-screenshot.js';
+import { createSandboxHandlers } from '../../src/handlers/registry.js';
+import { CONNECTION_ERROR } from '../read-retry-fake.js';
 
 interface ExportCall {
   format: string;
@@ -30,6 +32,97 @@ const exportable = (id: string, calls: ExportCall[]): BaseNode =>
   }) as unknown as BaseNode;
 
 describe('get_screenshot handler', () => {
+  it('reports an export that fails twice without a third attempt', async () => {
+    vi.useFakeTimers();
+    try {
+      const exportAsync = vi.fn<() => Promise<Uint8Array>>().mockRejectedValue(CONNECTION_ERROR);
+      const node = { id: '1:2', exportAsync } as unknown as BaseNode;
+      const reading = Promise.resolve(
+        createSandboxHandlers({
+          getNodeByIdAsync: async () => node,
+        } as unknown as typeof figma).get_screenshot!({ nodeIds: ['1:2'] }),
+      ).catch(error => error);
+      await vi.runAllTimersAsync();
+      expect(await reading).toMatchObject({
+        message: `exportAsync(1:2) failed: ${CONNECTION_ERROR} Read failed twice.`,
+      });
+      expect(exportAsync).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it.each([undefined, null])('attributes export rejection for render bounds %s', async bounds => {
+    const cause = new Error('unavailable');
+    const node = {
+      id: '1:2',
+      absoluteRenderBounds: bounds,
+      exportAsync: async () => {
+        throw cause;
+      },
+    } as unknown as BaseNode;
+    const error = await Promise.resolve(
+      createGetScreenshotHandler(fakeFigma({ '1:2': node }))({ nodeIds: ['1:2'] }),
+    ).catch(e => e);
+    expect(error).toMatchObject({ message: 'exportAsync(1:2) failed: unavailable', cause });
+  });
+  it.each([['1:1', '8:8'], ['8:8', '8:9'], ['8:8', '1:1', '8:8'], ['1:1', '1:1'], ['9:9']])(
+    'preserves successful images and each failed occurrence: %j',
+    async (...nodeIds) => {
+      const lookup = vi.fn<(id: string) => Promise<BaseNode | null>>(async id => {
+        if (id === '0:1') return { id } as BaseNode;
+        if (id === '9:9') return null;
+        if (id.startsWith('8:')) throw new Error('target rejected');
+        return exportable(id, []);
+      });
+      const result = (await createSandboxHandlers({
+        currentPage: { id: '0:1' },
+        getNodeByIdAsync: lookup,
+        base64Encode: () => 'image',
+      } as unknown as typeof figma).get_screenshot!({ nodeIds })) as GetScreenshotResult;
+      expect(result.images).toEqual(
+        nodeIds
+          .filter(id => !id.startsWith('8:'))
+          .map(nodeId => ({ nodeId, format: 'PNG', base64: nodeId === '9:9' ? null : 'image' })),
+      );
+      const message = expect.stringContaining('session answered other reads');
+      const errors = nodeIds.flatMap((nodeId, index) =>
+        nodeId.startsWith('8:') ? [{ index, nodeId, message }] : [],
+      );
+      expect(result.lookupErrors ?? []).toEqual(errors);
+      expect(lookup.mock.calls.filter(([id]) => id === '0:1')).toHaveLength(errors.length ? 1 : 0);
+    },
+  );
+  it.each([undefined, null])(
+    'retries only the failed export for render bounds %s',
+    async bounds => {
+      vi.useFakeTimers();
+      try {
+        const exportAsync = vi
+          .fn<(settings: ExportSettings) => Promise<Uint8Array>>()
+          .mockRejectedValueOnce(CONNECTION_ERROR)
+          .mockResolvedValue(new Uint8Array([7]));
+        const lookup = vi.fn<(id: string) => Promise<BaseNode | null>>().mockResolvedValue({
+          id: '1:2',
+          exportAsync,
+          absoluteRenderBounds: bounds,
+          absoluteBoundingBox: { width: 10, height: 10 },
+        } as unknown as BaseNode);
+        const reading = Promise.resolve(
+          createSandboxHandlers({
+            getNodeByIdAsync: lookup,
+            base64Encode: () => 'image',
+          } as unknown as typeof figma).get_screenshot!({ nodeIds: ['1:2'] }),
+        ).catch(error => error);
+        await vi.runAllTimersAsync();
+        expect(await reading).toMatchObject({ images: [{ nodeId: '1:2', base64: 'image' }] });
+        expect(exportAsync).toHaveBeenCalledTimes(2);
+        expect(exportAsync.mock.calls[1]).toEqual(exportAsync.mock.calls[0]);
+        expect(lookup).toHaveBeenCalledOnce();
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
   it('exports each node to base64 with PNG + scale by default', async () => {
     const calls: ExportCall[] = [];
     const handler = createGetScreenshotHandler(

@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { collectMatches, flattenForest, resolveScope, walk } from '../src/traverse.js';
+import { unloadedPage } from './page-fake.js';
+import { CONNECTION_ERROR } from './read-retry-fake.js';
 
 const node = (id: string, type: string, children?: SceneNode[]): SceneNode =>
   ({ id, type, name: id, children }) as unknown as SceneNode;
@@ -154,11 +156,52 @@ const fakeFigma = (opts: {
   lookup?: Record<string, BaseNode | null>;
 }): typeof figma =>
   ({
+    root: { children: Object.values(opts.lookup ?? {}).filter(n => n?.type === 'PAGE') },
     currentPage: { children: opts.pageChildren ?? [] },
     getNodeByIdAsync: async (id: string) => opts.lookup?.[id] ?? null,
   }) as unknown as typeof figma;
 
 describe('resolveScope', () => {
+  it('reports a page load that fails twice without a third attempt', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = unloadedPage();
+      f.loadAsync.mockRejectedValue(CONNECTION_ERROR);
+      const reading = resolveScope(f.figmaCtx, f.page.id).catch(error => error);
+      await vi.runAllTimersAsync();
+      expect((await reading).message).toBe(
+        `PageNode.loadAsync(P:2) failed: ${CONNECTION_ERROR} Read failed twice.`,
+      );
+      expect(f.loadAsync).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it('retries a failed page load before accessing children', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = unloadedPage();
+      f.loadAsync.mockRejectedValueOnce(CONNECTION_ERROR);
+      f.finish();
+      const reading = resolveScope(f.figmaCtx, f.page.id).catch(error => error);
+      await vi.runAllTimersAsync();
+      expect(await reading).toEqual(f.children);
+      expect(f.loadAsync).toHaveBeenCalledTimes(2);
+      expect(f.getNodeByIdAsync).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it('resolveScope loads an unloaded page before reading its children', async () => {
+    const f = unloadedPage();
+    const reading = resolveScope(f.figmaCtx, f.page.id);
+    expect(f.loadAsync).toHaveBeenCalledOnce();
+    expect(f.getNodeByIdAsync).not.toHaveBeenCalled();
+    expect(f.figmaCtx.currentPage.id).toBe('P:1');
+    f.finish();
+    expect(await reading).toBe(f.children);
+    expect(f.figmaCtx.currentPage.id).toBe('P:1');
+  });
   it('defaults to the current page children when root omitted', async () => {
     const children = [node('a', 'FRAME')];
     const scope = await resolveScope(fakeFigma({ pageChildren: children }), undefined);
@@ -176,7 +219,12 @@ describe('resolveScope', () => {
 
   it('returns the page children for a PAGE root id', async () => {
     const kids = [node('a', 'FRAME')];
-    const page = { id: 'p-1', type: 'PAGE', children: kids } as unknown as BaseNode;
+    const page = {
+      id: 'p-1',
+      type: 'PAGE',
+      children: kids,
+      loadAsync: async () => {},
+    } as unknown as BaseNode;
     const scope = await resolveScope(fakeFigma({ lookup: { 'p-1': page } }), 'p-1');
     expect(scope).toBe(kids);
   });

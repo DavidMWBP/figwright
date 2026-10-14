@@ -90,11 +90,11 @@ export interface WireRejection {
  * reached `figma.*` unchecked even on the in-process path, where the SDK validates every other
  * tool's arguments against this very schema before dispatch.
  *
- * Being wrong here is more expensive than elsewhere. A batch is atomic: an op that fails during
- * apply unwinds the ops already applied, and that unwind is itself allowed to fail — the handler
- * has a branch that reports "undo(s) FAILED — document may be partially changed". Arguments that
- * could never have worked are worth refusing before the first op touches the document, so that path
- * is never entered for a preventable reason.
+ * Being wrong here is more expensive than elsewhere. A batch attempts rollback: an op failing
+ * during apply unwinds the ops already applied, and that unwind is itself allowed to fail — the
+ * handler reports undo failures, residue, or an unknown outcome with progress if an await outlasts
+ * its timer. Arguments that could never have worked are worth refusing before the first op touches
+ * the document, so that path is never entered for a preventable reason.
  *
  * What this deliberately leaves to the plugin: _which_ tools may be batched. That allowlist is the
  * `INVERSES` map — membership means an op can be rolled back — and it is the sandbox's own

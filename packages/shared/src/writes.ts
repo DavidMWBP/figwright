@@ -177,7 +177,7 @@ export const ComponentPropertyResultSchema = z.object({
 });
 export type ComponentPropertyResult = z.infer<typeof ComponentPropertyResultSchema>;
 
-/** One step in an atomic batch: a write tool name + the params it would normally receive. */
+/** One step in a batch with rollback: a write tool name + its normal params. */
 export const BatchOpSchema = z.object({
   tool: z.string(),
   params: z.unknown().optional(),
@@ -185,8 +185,9 @@ export const BatchOpSchema = z.object({
 export type BatchOp = z.infer<typeof BatchOpSchema>;
 
 /**
- * Result of `batch`: the per-op results in op order. The batch is all-or-nothing — on any failure
- * the plugin rolls back the already-applied ops and the call rejects instead of returning this.
+ * Result of `batch`: the per-op results in op order. All-or-nothing when the call answers, except
+ * for reported undo failures or residue. A stop for time rolls back applied ops and reports how it
+ * went. An unknown-outcome timeout reports the last completed indexes; read back before retrying.
  */
 export const BatchResultSchema = z.object({
   ok: z.literal(true),

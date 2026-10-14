@@ -24,6 +24,7 @@ import {
 } from '@figwright/shared';
 
 import { TimeSlice } from './cooperative.js';
+import { figmaCall } from './figma-call.js';
 import { cssAngleFromGradientTransform } from './gradient-angle.js';
 import { flattenForest } from './traverse.js';
 
@@ -885,7 +886,9 @@ const resolveMainComponent = async (
 ): Promise<void | SerializedNode['mainComponent']> => {
   if (node.type !== 'INSTANCE') return undefined;
   try {
-    const main = await (node as InstanceNode).getMainComponentAsync();
+    const main = await figmaCall('getMainComponentAsync', node.id, () =>
+      (node as InstanceNode).getMainComponentAsync(),
+    );
     if (main === null) return undefined;
     const out: NonNullable<SerializedNode['mainComponent']> = {
       id: main.id,

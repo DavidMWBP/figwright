@@ -1,5 +1,13 @@
-import { ErrorCode, type RpcResponse } from '@figwright/shared';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+  ErrorCode,
+  getToolBudget,
+  getRelayBudget,
+  getFollowerBudget,
+  type RpcResponse,
+  createError,
+  createResponse,
+} from '@figwright/shared';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   DispatchError,
@@ -14,6 +22,8 @@ import { type Node, NodeRole } from '../src/election/node.js';
 import type { PluginSessionInfo } from '../src/routing/sessions.js';
 import { clearFileTarget, setFileTarget } from '../src/routing/target.js';
 import { captureNotices, withRoutingNotice } from '../src/tools/notices.js';
+import { ALL_TOOL_SPECS } from '../src/tools/registry.js';
+import { fakeRelay } from './relay-fake.js';
 
 const makeNode = (overrides: Partial<Node>): Node =>
   ({
@@ -27,6 +37,263 @@ const makeNode = (overrides: Partial<Node>): Node =>
 const makeFollower = (overrides: Partial<Follower>): Follower => overrides as unknown as Follower;
 
 describe('dispatchTool', () => {
+  it('keeps an older leader reply without attribution unchanged', async () => {
+    const node = makeNode({ isLeader: () => false });
+    const follower = makeFollower({
+      sendRpc: async () => ({
+        kind: 'err',
+        requestId: 'r',
+        code: ErrorCode.InvalidParams,
+        message: 'older leader rejected input',
+      }),
+    });
+    await expect(dispatchTool({ node, follower }, 'get_node', {})).rejects.toMatchObject({
+      message: 'older leader rejected input',
+    });
+  });
+  it('names the absence of an answering session when the follower cannot reach the leader', async () => {
+    const node = makeNode({ isLeader: () => false });
+    const follower = makeFollower({
+      sendRpc: async () => ({
+        kind: 'err',
+        requestId: 'r',
+        code: ErrorCode.Internal,
+        message: 'follower rpc transport: unavailable',
+      }),
+    });
+    await expect(
+      dispatchTool({ node, follower }, 'get_node', {}, { maxAttempts: 1 }),
+    ).rejects.toMatchObject({
+      code: ErrorCode.Internal,
+      message: 'follower rpc transport: unavailable (no session answered)',
+    });
+  });
+  it('does not retry a plugin rejection because its filename contains transport', async () => {
+    vi.useFakeTimers();
+    const attribution = '(answered by session session-a, file "transport")';
+    const sendRpc = vi.fn<() => Promise<RpcResponse>>(
+      async () =>
+        ({
+          kind: 'err',
+          requestId: 'r',
+          code: ErrorCode.Internal,
+          message: `INTERNAL_ERROR: unavailable ${attribution}`,
+          attribution,
+        }) as RpcResponse,
+    );
+    try {
+      const result = dispatchTool(
+        { node: makeNode({ isLeader: () => false }), follower: makeFollower({ sendRpc }) },
+        'set_text',
+        {},
+        { retryDelayMs: 1 },
+      ).catch(e => e);
+      await vi.runAllTimersAsync();
+      expect(((await result) as Error).message).toBe(`INTERNAL_ERROR: unavailable ${attribution}`);
+      expect(sendRpc).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it.each([true, false])(
+    'attributes a server error after a plugin reply with leader=%s',
+    async leader => {
+      const { relay, connect } = fakeRelay();
+      const plugin = connect('session-a', 'Draft α');
+      const node = makeNode({
+        isLeader: () => leader,
+        getLeader: () => ({ relay }) as unknown as ReturnType<Node['getLeader']>,
+      });
+      const follower = makeFollower({
+        sendRpc: async () =>
+          ({
+            kind: 'ok',
+            requestId: 'r',
+            result: {},
+            attribution: '(answered by session session-a, file "Draft α")',
+          }) as RpcResponse,
+      });
+      try {
+        const result = captureNotices(
+          async () => {
+            await dispatchTool({ node, follower }, 'get_node', {});
+            throw new Error('save failed');
+          },
+          r => r,
+        ).catch(e => e);
+        if (leader) {
+          const request = await plugin.request;
+          plugin.receive(createResponse({ id: request.id, sessionId: 'session-a', result: {} }));
+        }
+        expect(((await result) as Error).message).toBe(
+          'save failed (answered by session session-a, file "Draft α")',
+        );
+      } finally {
+        await relay.stop();
+      }
+    },
+  );
+  it('attributes concurrent failed calls to their own answering file', async () => {
+    const { relay, connect } = fakeRelay();
+    const a = connect('session-a', 'Draft "α"', 'Overview');
+    const b = connect('session-b', 'Draft β');
+    const node = makeNode({
+      isLeader: () => true,
+      getLeader: () => ({ relay }) as unknown as ReturnType<Node['getLeader']>,
+    });
+    try {
+      const first = dispatchTool(
+        { node, follower: makeFollower({}) },
+        'get_node',
+        {},
+        { sessionId: 'session-a' },
+      ).catch(e => e);
+      const second = dispatchTool(
+        { node, follower: makeFollower({}) },
+        'get_node',
+        {},
+        { sessionId: 'session-b' },
+      ).catch(e => e);
+      for (const [id, plugin] of [
+        ['session-b', b],
+        ['session-a', a],
+      ] as const) {
+        plugin.receive(
+          createError({
+            id: plugin.sent.at(-1)!.id,
+            sessionId: id,
+            code: ErrorCode.Internal,
+            message: 'unavailable',
+          }),
+        );
+      }
+      expect(((await first) as Error).message).toBe(
+        'INTERNAL_ERROR: unavailable (answered by session session-a, file "Draft "α"", page "Overview")',
+      );
+      expect(((await second) as Error).message).toBe(
+        'INTERNAL_ERROR: unavailable (answered by session session-b, file "Draft β")',
+      );
+    } finally {
+      await relay.stop();
+    }
+  });
+
+  it('says no session answered when the pinned session is gone', async () => {
+    const { relay } = fakeRelay();
+    const node = makeNode({
+      isLeader: () => true,
+      getLeader: () => ({ relay }) as unknown as ReturnType<Node['getLeader']>,
+    });
+    try {
+      await expect(
+        dispatchTool({ node, follower: makeFollower({}) }, 'get_node', {}, { sessionId: 'gone' }),
+      ).rejects.toThrow('no session answered');
+    } finally {
+      await relay.stop();
+    }
+  });
+
+  it.each([false, true])('reports an unanswered request with connected=%s', async connected => {
+    vi.useFakeTimers();
+    const { relay, connect } = fakeRelay();
+    if (connected) connect('session-a', 'Draft α');
+    const node = makeNode({
+      isLeader: () => true,
+      getLeader: () => ({ relay }) as unknown as ReturnType<Node['getLeader']>,
+    });
+    try {
+      const result = dispatchTool(
+        { node, follower: makeFollower({}) },
+        'get_node',
+        {},
+        { perCallTimeoutMs: 10 },
+      ).catch(e => e);
+      await vi.advanceTimersByTimeAsync(10);
+      const error = (await result) as Error;
+      expect(error.message).toBe(
+        connected
+          ? 'plugin request timeout (method=get_node) (no session answered; routed to session session-a, file "Draft α")'
+          : 'plugin request timeout (method=get_node) (no session answered)',
+      );
+    } finally {
+      await relay.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not duplicate session attribution already on an error', async () => {
+    const { relay, connect } = fakeRelay();
+    const plugin = connect('session-a', 'Draft α');
+    try {
+      const result = relay.sendRequest('get_node', {}).catch(e => e);
+      plugin.receive(
+        createError({
+          id: plugin.sent.at(-1)!.id,
+          sessionId: 'session-a',
+          code: ErrorCode.Internal,
+          message: 'unavailable (answered by session session-a, file "Draft α")',
+        }),
+      );
+      expect(((await result) as Error).message).toBe(
+        'INTERNAL_ERROR: unavailable (answered by session session-a, file "Draft α")',
+      );
+    } finally {
+      await relay.stop();
+    }
+  });
+  it('keeps every non-batch tool on its existing three budgets regardless of ops', () => {
+    const heavy = new Set([
+      'get_screenshot',
+      'save_screenshots',
+      'save_image_fills',
+      'export_pdf',
+      'get_document',
+      'get_design_context',
+      'get_node',
+      'get_nodes_info',
+      'search_nodes',
+      'scan_text_nodes',
+      'scan_nodes_by_types',
+      'get_local_components',
+      'import_variable',
+      'import_style',
+    ]);
+    for (const { name } of ALL_TOOL_SPECS) {
+      if (name === 'batch') continue;
+      const budget = heavy.has(name) ? 120_000 : 30_000;
+      const params = { ops: Array.from({ length: 100 }, () => ({})) };
+      expect(getToolBudget(name, params)).toBe(budget);
+      expect(getRelayBudget(name, params)).toBe(budget + 5_000);
+      expect(getFollowerBudget(name, params)).toBe(budget + 10_000);
+    }
+  });
+  it.each([true, false])('passes the op count to the budget on leader=%s', async leader => {
+    let budget: number | undefined;
+    const node = makeNode({
+      isLeader: () => leader,
+      getLeader: () =>
+        ({
+          relay: {
+            skewNotice: () => null,
+            sendRequest: async (_name: string, _args: unknown, timeout: number) => {
+              budget = timeout;
+              return { ok: true };
+            },
+          },
+        }) as unknown as ReturnType<Node['getLeader']>,
+    });
+    const follower = makeFollower({
+      sendRpc: async (_name, _args, _id, _session, timeout) => {
+        budget = timeout;
+        return { kind: 'ok', requestId: 'r', result: { ok: true } };
+      },
+    });
+    const args = { ops: Array.from({ length: 12 }, () => ({})) };
+    await dispatchTool({ node, follower }, 'batch', args);
+    expect(budget).toBe(leader ? 245_000 : 250_000);
+    await dispatchTool({ node, follower }, 'batch', args, { perCallTimeoutMs: 17 });
+    expect(budget).toBe(17);
+  });
   it('routes to Relay.sendRequest when local node is leader', async () => {
     const calls: Array<{ name: string; args: unknown }> = [];
     const node = makeNode({

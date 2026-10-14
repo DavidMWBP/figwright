@@ -3,6 +3,22 @@ import { describe, expect, it } from 'vitest';
 
 import { createGetComponentApiHandler } from '../../src/handlers/get-component-api.js';
 
+it('attributes a main-component rejection to the instance', async () => {
+  const cause = new Error('unavailable');
+  const node = {
+    id: '1:2',
+    type: 'INSTANCE',
+    getMainComponentAsync: async () => {
+      throw cause;
+    },
+  };
+  const handler = createGetComponentApiHandler({
+    getNodeByIdAsync: async () => node,
+  } as unknown as typeof figma);
+  const error = await Promise.resolve(handler({ nodeId: '1:2' })).catch(e => e);
+  expect(error).toMatchObject({ message: 'getMainComponentAsync(1:2) failed: unavailable', cause });
+});
+
 const defs = {
   Size: { type: 'VARIANT', defaultValue: 'md', variantOptions: ['sm', 'md', 'lg'] },
   'Disabled#1:2': { type: 'BOOLEAN', defaultValue: false },

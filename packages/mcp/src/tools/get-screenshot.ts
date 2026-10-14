@@ -28,7 +28,13 @@ export const getScreenshotTool: ToolSpec = {
     'scale, the anchor for mapping raster px back to design px. base64 is null for missing or ' +
     'non-exportable nodes. Nodes that are fully clipped or off-canvas (carousels, masks, off-screen ' +
     'states) are auto-recovered at their intrinsic bounds and flagged recovered:true. empty:true ' +
-    'means the node genuinely renders nothing even unclipped (hidden / no content) so the export is blank.',
+    'means the node genuinely renders nothing even unclipped (hidden / no content) so the export is blank. ' +
+    'Rejected lookups are omitted from images and reported in lookupErrors: [{ index, nodeId, message }], ' +
+    'with zero-based input indexes, including every duplicate occurrence and all-failed calls; successful images stay in input order. ' +
+    'A rejection is not proof of a missing id. One loaded-page probe is shared per call: if it works, ' +
+    'the target failed while the session answered other reads; the id may be missing, deleted, on a page not loaded, ' +
+    'or not yet synced from another client. A plugin reload is not indicated; try reading its parent. ' +
+    'If the probe also fails, the session is not answering reads; reload the plugin. Export errors still fail the call.',
   inputSchema: z.object({
     nodeIds: z.array(z.string()).describe('Figma node ids to export'),
     format: z
@@ -105,6 +111,9 @@ export const screenshotContent = (
   budgetBytes = INLINE_IMAGE_BUDGET_BYTES,
 ): ScreenshotContent[] => {
   const blocks: ScreenshotContent[] = [];
+  for (const error of result.lookupErrors ?? []) {
+    blocks.push({ type: 'text', text: `${error.nodeId} (index ${error.index}): ${error.message}` });
+  }
   /** Fit nowhere in the remaining budget, but would fit a call of their own. */
   const deferred: string[] = [];
   /** Exceed the whole budget alone — a follow-up call would fail identically. */

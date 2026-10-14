@@ -32,7 +32,6 @@ export const createGetNodesInfoHandler =
       }),
     );
     failures.sort((a, b) => a.index - b.index);
-    if (ids.length > 0 && failures.length === ids.length) throw failures[0]!.error;
     if (runs.some(entry => entry !== null && !entry.run.complete)) {
       const sizes = runs
         .filter(entry => entry !== null)

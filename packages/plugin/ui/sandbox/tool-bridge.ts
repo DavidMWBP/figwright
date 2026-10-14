@@ -10,6 +10,7 @@ import {
   isPluginBridgeMessage,
   type PluginBridgeMessage,
   PluginToolFailure,
+  type PluginToolProgress,
 } from '../../protocol/bridge.js';
 import type { ToolHandler } from '../relay/state.js';
 import { onSandboxMessage, postToSandbox } from './messaging.js';
@@ -42,6 +43,7 @@ interface Pending {
   reject: (err: Error) => void;
   timer: ReturnType<typeof setTimeout>;
   method: string;
+  progress?: PluginToolProgress;
 }
 
 export const createToolBridge = (opts: ToolBridgeOptions = {}): ToolBridge => {
@@ -59,6 +61,10 @@ export const createToolBridge = (opts: ToolBridgeOptions = {}): ToolBridge => {
       log(`[tool-bridge] orphan ${raw.kind} for id=${raw.id}`);
       return;
     }
+    if (raw.kind === 'tool-progress') {
+      if (entry.method === 'batch') entry.progress = raw;
+      return;
+    }
     clearTimeout(entry.timer);
     pending.delete(raw.id);
     if (raw.kind === 'tool-result') {
@@ -73,11 +79,25 @@ export const createToolBridge = (opts: ToolBridgeOptions = {}): ToolBridge => {
       const id = newId();
       // Per-tool budget (innermost layer B) so a heavy tool isn't capped at the default window while
       // the relay still waits. An explicit opts.timeoutMs overrides for tests. See getToolBudget.
-      const timeoutMs = opts.timeoutMs ?? getToolBudget(method);
+      const timeoutMs = opts.timeoutMs ?? getToolBudget(method, params);
       const timer = setTimeout(() => {
+        const state = pending.get(id)?.progress;
         pending.delete(id);
         const message = `sandbox tool timeout (method=${method})`;
-        if (LIBRARY_IMPORT_TOOLS.has(method)) {
+        if (method === 'batch') {
+          const progress =
+            state === undefined
+              ? 'progress unavailable (phase and completed/in-flight op indexes unknown)'
+              : `last reported phase=${state.phase}; completed op indexes=[${state.completed.join(', ')}]; ` +
+                `in-flight op indexes=[${state.inFlight.join(', ')}]; rolled-back op indexes=[${state.rolledBack.join(', ')}] (zero-based)`;
+          reject(
+            new PluginToolFailure(
+              ErrorCode.Timeout,
+              `${message}. Batch outcome is unknown; ${progress}. ` +
+                'Figma work may still be running. Read back the targets before any retry.',
+            ),
+          );
+        } else if (LIBRARY_IMPORT_TOOLS.has(method)) {
           reject(
             new PluginToolFailure(
               ErrorCode.Timeout,

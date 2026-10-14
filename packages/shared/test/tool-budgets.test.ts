@@ -10,6 +10,17 @@ import {
 } from '../src/tool-budgets.js';
 
 describe('tool budgets', () => {
+  it.each([
+    [1, 130_000],
+    [12, 240_000],
+    [48, 600_000],
+    [100, 600_000],
+  ])('scales and caps the three batch layers for %i ops', (count, budget) => {
+    const params = { ops: Array.from({ length: count }, () => ({})) };
+    expect(getToolBudget('batch', params)).toBe(budget);
+    expect(getRelayBudget('batch', params)).toBe(budget + 5_000);
+    expect(getFollowerBudget('batch', params)).toBe(budget + 10_000);
+  });
   it('gives unknown / light tools the default budget', () => {
     expect(getToolBudget('ping')).toBe(DEFAULT_TOOL_BUDGET_MS);
     expect(getToolBudget('set_fills')).toBe(DEFAULT_TOOL_BUDGET_MS);
@@ -37,9 +48,6 @@ describe('tool budgets', () => {
       // A library import can wait on Figma's throttled timers in a background file.
       'import_variable',
       'import_style',
-      // Carries N writes and, on a failure, N undos — a timeout mid-rollback would hide whether the
-      // document was left changed.
-      'batch',
     ]) {
       expect(getToolBudget(t)).toBe(HEAVY_TOOL_BUDGET_MS);
     }

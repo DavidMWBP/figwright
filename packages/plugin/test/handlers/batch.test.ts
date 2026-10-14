@@ -21,6 +21,7 @@ import { createEditComponentPropertyHandler } from '../../src/handlers/edit-comp
 import { createGroupNodesHandler } from '../../src/handlers/group-nodes.js';
 import { createMoveNodesHandler } from '../../src/handlers/move-nodes.js';
 import { createNavigateToPageHandler } from '../../src/handlers/navigate-to-page.js';
+import { createSandboxHandlers } from '../../src/handlers/registry.js';
 import { createRemoveReactionsHandler } from '../../src/handlers/remove-reactions.js';
 import { createRenameNodeHandler } from '../../src/handlers/rename-node.js';
 import { createRenameVariableHandler } from '../../src/handlers/rename-variable.js';
@@ -47,7 +48,140 @@ import { createUpdateTextStyleHandler } from '../../src/handlers/update-text-sty
 import { createUpdateVariableCollectionHandler } from '../../src/handlers/update-variable-collection.js';
 import { createIdempotencyCache, idempotent } from '../../src/idempotency.js';
 import { withInstanceIdLookup } from '../../src/node-lookup.js';
+import { unloadedPage } from '../page-fake.js';
+import { CONNECTION_ERROR } from '../read-retry-fake.js';
 import { makeFlowsFigma } from './flows-fake.js';
+
+it('never repeats an apply that rejects with the connection error', async () => {
+  const { figmaCtx, store } = makeFigma({
+    '1:1': { id: '1:1', name: 'Before', type: 'RECTANGLE' },
+  });
+  const apply = vi.fn<(name: string) => void>(() => {
+    throw new Error(CONNECTION_ERROR);
+  });
+  Object.defineProperty(store.get('1:1')!, 'name', { get: () => 'Before', set: apply });
+  const handler = createSandboxHandlers(figmaCtx).batch!;
+  await expect(
+    handler({
+      requestId: 'once',
+      ops: [{ tool: 'rename_node', params: { nodeId: '1:1', name: 'After' } }],
+    }),
+  ).rejects.toThrow(CONNECTION_ERROR);
+  expect(apply).toHaveBeenCalledOnce();
+});
+
+it.each([
+  { phase: 'capture', failedReads: 1, name: 'After', outcome: { ok: true } },
+  {
+    phase: 'apply',
+    failedReads: 1,
+    name: 'Before',
+    outcome: { message: expect.stringContaining('op 0 (rename_node) failed') },
+  },
+  {
+    phase: 'rollback',
+    failedReads: 2,
+    name: 'After',
+    outcome: { message: expect.stringMatching(/1 undo\(s\) FAILED/) },
+  },
+  {
+    phase: 'reserve',
+    failedReads: 1,
+    name: 'Before',
+    outcome: { message: expect.stringContaining('capture failed before any op was applied') },
+  },
+])('bounds connection retries in %s', async ({ phase, failedReads, name, outcome }) => {
+  vi.useFakeTimers();
+  vi.setSystemTime(0);
+  try {
+    const { figmaCtx, store } = makeFigma({
+      '1:1': { id: '1:1', name: 'Before', type: 'RECTANGLE' },
+    });
+    const lookup = vi
+      .fn<(id: string) => Promise<unknown>>()
+      .mockImplementation(async () => store.get('1:1'));
+    const failingRead = vi.fn<() => Promise<never>>(async () => {
+      throw new Error(CONNECTION_ERROR);
+    });
+    if (phase === 'capture') lookup.mockImplementationOnce(failingRead);
+    if (phase === 'reserve')
+      lookup.mockImplementation(async () => {
+        vi.setSystemTime(59_750); // One-op stop is 70s: 250ms pause plus the platform's 10s cannot fit.
+        return failingRead();
+      });
+    const page = { id: '0:1' };
+    const probe = vi.fn<() => Promise<unknown>>(async () => page);
+    Object.assign(figmaCtx, {
+      currentPage: page,
+      getNodeByIdAsync: (id: string) => (id === page.id ? probe() : lookup(id)),
+    });
+    const handler = createSandboxHandlers(figmaCtx).batch!;
+    const ops = [{ tool: 'rename_node', params: { nodeId: '1:1', name: 'After' } }];
+    if (phase === 'rollback')
+      ops.push({ tool: 'rename_node', params: { nodeId: '1:1', name: 'Next' } });
+    const reading = Promise.resolve(
+      handler(
+        { requestId: phase, ops },
+        {
+          progress: state => {
+            if (
+              (phase === 'apply' && state.phase === 'apply') ||
+              (phase === 'rollback' && state.phase === 'apply' && state.inFlight[0] === 1)
+            )
+              lookup.mockImplementation(failingRead);
+          },
+        },
+      ),
+    ).catch(error => error);
+    await vi.runAllTimersAsync();
+    const result = await reading;
+    expect(result).toMatchObject(outcome);
+    expect(store.get('1:1')!.name).toBe(name);
+    expect(failingRead).toHaveBeenCalledTimes(failedReads);
+    expect(probe).toHaveBeenCalledTimes(phase === 'capture' ? 0 : 1);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('captures and renames an unloaded page', async () => {
+  const f = unloadedPage();
+  let name = 'Before';
+  Object.defineProperty(f.page, 'name', {
+    get: () => {
+      // This fixture's children getter asserts that loadAsync has completed.
+      void f.page.children;
+      return name;
+    },
+    set: (value: string) => {
+      name = value;
+    },
+  });
+  f.finish();
+  const result = await Promise.resolve(
+    createSandboxHandlers(f.figmaCtx).batch!({
+      ops: [{ tool: 'rename_page', params: { pageId: f.page.id, name: 'After' } }],
+    }),
+  ).catch(error => error);
+  expect(result).toMatchObject({ ok: true, results: [{ ok: true }] });
+  expect(f.page.name).toBe('After');
+  expect(f.loadAsync).toHaveBeenCalled();
+});
+
+it.each(['navigate_to_page', 'update_flows'])('loads the page before capturing %s', async tool => {
+  const f = unloadedPage();
+  const handler = createBatchHandler(f.figmaCtx, {
+    navigate_to_page: createNavigateToPageHandler(f.figmaCtx),
+    update_flows: createUpdateFlowsHandler(f.figmaCtx),
+  });
+  f.finish();
+  const result = await Promise.resolve(
+    handler({ ops: [{ tool, params: { pageId: f.page.id } }] }),
+  ).catch(error => error);
+  expect(f.loadAsync).toHaveBeenCalled();
+  expect(f.getNodeByIdAsync).not.toHaveBeenCalled();
+  expect(result).toMatchObject({ ok: true, results: [{ ok: true }] });
+});
 
 /** A mutable node store backing a fake figma whose getNodeByIdAsync / createFrame share one map. */
 const MIXED = Symbol('mixed');
@@ -100,6 +234,173 @@ const realWrites = (figmaCtx: typeof figma): SandboxHandlers => ({
 });
 
 const SOLID = (r: number): unknown => ({ type: 'SOLID', color: { r, g: 0, b: 0 } });
+
+describe('batch deadlines', () => {
+  it.each([1, 12, 48])(
+    'preserves successful results for %i ops within the deadline',
+    async count => {
+      vi.useFakeTimers();
+      vi.setSystemTime(0);
+      try {
+        const { figmaCtx, store } = makeFigma({ '1:1': { id: '1:1', name: 'before' } });
+        const result = await createBatchHandler(
+          figmaCtx,
+          realWrites(figmaCtx),
+        )({
+          ops: Array.from({ length: count }, (_, i) => ({
+            tool: 'rename_node',
+            params: { nodeId: '1:1', name: `after-${i}` },
+          })),
+        });
+        expect(result).toEqual({
+          ok: true,
+          results: Array.from({ length: count }, () => ({ ok: true, nodeId: '1:1' })),
+        });
+        expect(store.get('1:1')!.name).toBe(`after-${count - 1}`);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+  it('stops before the next op and rolls back when the batch deadline is reached', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    try {
+      const undone: string[] = [];
+      const initial = Object.fromEntries(
+        ['1:1', '1:2', '1:3'].map(id => {
+          let name = 'before';
+          return [
+            id,
+            {
+              id,
+              get name() {
+                return name;
+              },
+              set name(value: string) {
+                name = value;
+                if (value === 'before') undone.push(id);
+              },
+            },
+          ];
+        }),
+      );
+      const { figmaCtx, store } = makeFigma(initial);
+      let finish: (() => void) | undefined;
+      let markStarted!: () => void;
+      const started = new Promise<void>(resolve => {
+        markStarted = resolve;
+      });
+      const calls: string[] = [];
+      const handler = createBatchHandler(figmaCtx, {
+        rename_node: async params => {
+          const p = params as { nodeId: string; name: string };
+          calls.push(p.nodeId);
+          store.get(p.nodeId)!.name = p.name;
+          if (calls.length === 2) {
+            await new Promise<void>(resolve => {
+              finish = resolve;
+              markStarted();
+            });
+          }
+          return { ok: true };
+        },
+      });
+      const answer = handler({
+        ops: ['1:1', '1:2', '1:3'].map(nodeId => ({
+          tool: 'rename_node',
+          params: { nodeId, name: 'after' },
+        })),
+      }) as Promise<unknown>;
+      const outcome = answer.catch(error => error as Error);
+      await started;
+      vi.setSystemTime(90_001); // 150s budget less the 60s rollback reserve.
+      expect(undone).toEqual([]); // Never undo while the second apply is pending.
+      finish!();
+      expect(await outcome).toMatchObject({
+        message: expect.stringMatching(
+          /stopped for time after op 1.*rolled back 2 applied op\(s\)/,
+        ),
+      });
+      expect(calls).toEqual(['1:1', '1:2']);
+      expect(undone).toEqual(['1:2', '1:1']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([1, 12, 48])(
+    'stops before op 0 with %i ops when capture consumes the window',
+    async count => {
+      vi.useFakeTimers();
+      vi.setSystemTime(0);
+      try {
+        const { figmaCtx } = makeFigma({ '1:1': { id: '1:1', name: 'before' } });
+        const lookup = figmaCtx.getNodeByIdAsync.bind(figmaCtx);
+        figmaCtx.getNodeByIdAsync = async id => {
+          vi.setSystemTime(count === 1 ? 70_001 : count === 12 ? 180_001 : 540_001);
+          return lookup(id);
+        };
+        const apply = vi.fn<() => { ok: boolean }>(() => ({ ok: true }));
+        await expect(
+          createBatchHandler(figmaCtx, { rename_node: apply })({
+            ops: Array.from({ length: count }, () => ({
+              tool: 'rename_node',
+              params: { nodeId: '1:1', name: 'after' },
+            })),
+          }),
+        ).rejects.toThrow(/stopped for time before op 0.*nothing was applied/);
+        expect(apply).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it('reports failed undos and continues rollback after the reserve is exhausted', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    try {
+      let name = 'before';
+      const { figmaCtx, store } = makeFigma({
+        '1:1': { id: '1:1', name: 'before' },
+        '1:2': {
+          id: '1:2',
+          get name() {
+            return name;
+          },
+          set name(value: string) {
+            if (value === 'before') {
+              vi.setSystemTime(200_000);
+              throw new Error('undo blocked');
+            }
+            name = value;
+          },
+        },
+      });
+      let applied = 0;
+      const handler = createBatchHandler(figmaCtx, {
+        rename_node: params => {
+          const p = params as { nodeId: string; name: string };
+          store.get(p.nodeId)!.name = p.name;
+          if (++applied === 2) vi.setSystemTime(90_001);
+          return { ok: true };
+        },
+      });
+      await expect(
+        handler({
+          ops: ['1:1', '1:2', '1:1'].map(nodeId => ({
+            tool: 'rename_node',
+            params: { nodeId, name: 'after' },
+          })),
+        }),
+      ).rejects.toThrow(/stopped for time after op 1.*1 undo\(s\) FAILED.*op 1.*undo blocked/);
+      expect(store.get('1:1')!.name).toBe('before');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
 
 type Fn = (...args: never[]) => unknown;
 type Run = Record<string, unknown>;
@@ -1296,8 +1597,21 @@ describe('batch inverses for the newly batchable writes', () => {
   it('navigates back to the page it started on', async () => {
     const { figmaCtx, store, pages } = makeWide();
     failingFrame(store);
-    store.set('P:1', { id: 'P:1', type: 'PAGE' });
-    store.set('P:2', { id: 'P:2', type: 'PAGE' });
+    store.set('P:1', {
+      id: 'P:1',
+      type: 'PAGE',
+      flowStartingPoints: [],
+      loadAsync: async () => {},
+    });
+    store.set('P:2', {
+      id: 'P:2',
+      type: 'PAGE',
+      flowStartingPoints: [],
+      loadAsync: async () => {},
+    });
+    Object.defineProperty(figmaCtx.root, 'children', {
+      get: () => [store.get('P:1'), store.get('P:2')],
+    });
     const handler = createBatchHandler(figmaCtx, {
       navigate_to_page: createNavigateToPageHandler(figmaCtx),
       set_fills: createSetFillsHandler(figmaCtx),

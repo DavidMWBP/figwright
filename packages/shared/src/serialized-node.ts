@@ -753,13 +753,16 @@ export const GetNodeResultSchema = z.object({
 });
 export type GetNodeResult = z.infer<typeof GetNodeResultSchema>;
 
+// Failed lookup occurrences use input indexes, distinct from a lookup resolving null.
+export const LookupErrorsSchema = z
+  .array(
+    z.object({ index: z.number().int().nonnegative(), nodeId: z.string(), message: z.string() }),
+  )
+  .optional();
+
 export const GetNodesInfoResultSchema = z.object({
   nodes: z.array(SerializedNodeSchema.nullable()),
-  lookupErrors: z
-    .array(
-      z.object({ index: z.number().int().nonnegative(), nodeId: z.string(), message: z.string() }),
-    )
-    .optional(),
+  lookupErrors: LookupErrorsSchema,
 });
 export type GetNodesInfoResult = z.infer<typeof GetNodesInfoResultSchema>;
 

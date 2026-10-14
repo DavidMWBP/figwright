@@ -1,6 +1,7 @@
 import type { FlowStartingPoint, UpdateFlowsResult } from '@figwright/shared';
 
 import type { SandboxToolHandler } from '../dispatcher.js';
+import { loadPage } from '../page-lookup.js';
 
 const TOOL = 'update_flows';
 
@@ -83,11 +84,12 @@ const parse = async (figmaCtx: typeof figma, params: unknown): Promise<Parsed> =
   const remove = parseIds(p.remove, 'remove');
   const order = parseIds(p.order, 'order');
 
-  const page = await figmaCtx.getNodeByIdAsync(p.pageId);
-  if (page === null) throw new Error(`${TOOL}: page ${p.pageId} not found`);
-  if (page.type !== 'PAGE') {
+  const page = await loadPage(figmaCtx, p.pageId);
+  if (page === null) {
+    const node = await figmaCtx.getNodeByIdAsync(p.pageId);
+    if (node === null) throw new Error(`${TOOL}: page ${p.pageId} not found`);
     throw new Error(
-      `${TOOL}: ${p.pageId} is a ${page.type}, not a page — get_pages lists page ids`,
+      `${TOOL}: ${p.pageId} is a ${node.type}, not a page — get_pages lists page ids`,
     );
   }
   return { page, flows, remove, order };

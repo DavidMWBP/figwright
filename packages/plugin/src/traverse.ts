@@ -1,4 +1,5 @@
 import { TimeSlice } from './cooperative.js';
+import { loadPage } from './page-lookup.js';
 
 const isSceneNode = (node: BaseNode): node is SceneNode =>
   node.type !== 'DOCUMENT' && node.type !== 'PAGE';
@@ -103,9 +104,10 @@ export const resolveScope = async (
   if (typeof root !== 'string') {
     throw new TypeError('root must be a string node id');
   }
+  const page = await loadPage(figmaCtx, root);
+  if (page !== null) return page.children;
   const node = await figmaCtx.getNodeByIdAsync(root);
   if (node === null) return [];
   if (isSceneNode(node)) return [node];
-  if (node.type === 'PAGE') return (node as PageNode).children;
   return [];
 };

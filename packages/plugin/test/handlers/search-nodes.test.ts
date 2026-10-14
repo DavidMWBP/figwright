@@ -2,6 +2,20 @@ import type { SearchNodesResult } from '@figwright/shared';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createSearchNodesHandler } from '../../src/handlers/search-nodes.js';
+import { unloadedPage } from '../page-fake.js';
+
+it('loads a page from root.children before accessing it', async () => {
+  const f = unloadedPage();
+  const running = Promise.resolve(
+    createSearchNodesHandler(f.figmaCtx)({ root: f.page.id, type: 'FRAME' }),
+  );
+  void running.catch(() => {});
+  expect(f.loadAsync).toHaveBeenCalledOnce();
+  expect(f.getNodeByIdAsync).not.toHaveBeenCalled();
+  f.finish();
+  expect(((await running) as SearchNodesResult).nodes.map(n => n.id)).toEqual(['child']);
+  expect(f.getNodeByIdAsync).not.toHaveBeenCalled();
+});
 
 // Every Date.now() read advances a fake clock by 1ms, so a time slice ends after a fixed number of
 // reads instead of after however much work this machine fits into 40 real milliseconds.
@@ -30,6 +44,7 @@ const fakeFigma = (
   lookup: Record<string, BaseNode | null> = {},
 ): typeof figma =>
   ({
+    root: { children: Object.values(lookup).filter(n => n?.type === 'PAGE') },
     currentPage: { children: pageChildren },
     getNodeByIdAsync: async (id: string) => lookup[id] ?? null,
   }) as unknown as typeof figma;
@@ -129,7 +144,12 @@ describe('search_nodes handler', () => {
         },
       });
     });
-    const page = { type: 'PAGE', children: instances } as unknown as PageNode;
+    const page = {
+      id: '1:1',
+      type: 'PAGE',
+      children: instances,
+      loadAsync: async () => {},
+    } as unknown as PageNode;
     const handler = createSearchNodesHandler(fakeFigma([], { '1:1': page }));
 
     const result = (await handler({ root: '1:1', type: 'INSTANCE' })) as SearchNodesResult;

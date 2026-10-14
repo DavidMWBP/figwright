@@ -261,6 +261,7 @@ export const attachLeaderEndpoints = (http: HttpServer, deps: LeaderEndpointDeps
           return;
         }
 
+        let attribution: string | undefined;
         try {
           // Only the leader holds the relay, so the skew warning has to travel back with the result:
           // a follower has no other way to know which plugin build served its call. Captured as the
@@ -273,10 +274,11 @@ export const attachLeaderEndpoints = (http: HttpServer, deps: LeaderEndpointDeps
             // The caller's own arguments, never checkWireArgs' parsed output: parsing strips keys
             // this build does not know, which is precisely what a newer caller needs kept.
             args,
-            deps.rpcTimeoutMs ?? getRelayBudget(toolName),
+            deps.rpcTimeoutMs ?? getRelayBudget(toolName, args),
             sessionId,
-            served => {
+            (served, answer) => {
               notice = relay.skewNotice(served);
+              attribution = answer;
             },
           );
           writeMsgpack(res, 200, {
@@ -284,18 +286,30 @@ export const attachLeaderEndpoints = (http: HttpServer, deps: LeaderEndpointDeps
             requestId,
             result,
             ...(notice === null ? {} : { notice }),
+            ...(attribution === undefined ? {} : { attribution }),
           });
         } catch (err) {
           const message = (err as Error).message;
+          // Session labels are context, never evidence for the error's code.
+          const originalMessage =
+            attribution !== undefined && message.endsWith(attribution)
+              ? message.slice(0, -attribution.length).trimEnd()
+              : message;
           const code =
-            message.startsWith('no plugin connected') ||
-            message.startsWith('pinned session') ||
-            message.startsWith('plugin closed before answering')
+            originalMessage.startsWith('no plugin connected') ||
+            originalMessage.startsWith('pinned session') ||
+            originalMessage.startsWith('plugin closed before answering')
               ? ErrorCode.PluginDisconnected
-              : message.includes('timeout')
+              : originalMessage.includes('timeout')
                 ? ErrorCode.Timeout
                 : ErrorCode.Internal;
-          writeMsgpack(res, 200, { kind: 'err', requestId, code, message });
+          writeMsgpack(res, 200, {
+            kind: 'err',
+            requestId,
+            code,
+            message,
+            ...(attribution === undefined ? {} : { attribution }),
+          });
         }
       })();
       return;

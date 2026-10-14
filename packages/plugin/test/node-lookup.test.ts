@@ -1,8 +1,63 @@
 import type { GetNodeMotionResult, MutateResult } from '@figwright/shared';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createSandboxHandlers } from '../src/handlers/registry.js';
 import { withInstanceIdLookup } from '../src/node-lookup.js';
+import { unloadedPage } from './page-fake.js';
+
+it('wraps variable lookup on a frozen host API', async () => {
+  const variable = { id: 'V:2' } as Variable;
+  const variables = Object.freeze({
+    getVariableByIdAsync: vi.fn<(id: string) => Promise<Variable | null>>(async () => variable),
+  });
+  const ctx = withInstanceIdLookup({ variables } as unknown as typeof figma);
+  await expect(ctx.variables.getVariableByIdAsync('V:2')).resolves.toBe(variable);
+  expect(variables.getVariableByIdAsync).toHaveBeenCalledWith('V:2');
+});
+
+it.each(['font', 'variable', 'page'])(
+  'attributes the %s API boundary used by all handlers',
+  async boundary => {
+    const cause = new Error('unavailable');
+    const reject = async () => {
+      throw cause;
+    };
+    const ctx = withInstanceIdLookup({
+      loadFontAsync: reject,
+      variables: { getVariableByIdAsync: reject },
+      setCurrentPageAsync: reject,
+    } as unknown as typeof figma);
+    const calls = {
+      font: () => ctx.loadFontAsync({ family: 'Example Sans', style: 'Regular' }),
+      variable: () => ctx.variables.getVariableByIdAsync('V:2'),
+      page: () => ctx.setCurrentPageAsync({ id: 'P:2' } as PageNode),
+    };
+    const expected = {
+      font: 'loadFontAsync(Example Sans Regular) failed: unavailable',
+      variable: 'getVariableByIdAsync(V:2) failed: unavailable',
+      page: 'setCurrentPageAsync(P:2) failed: unavailable',
+    };
+    const error = await calls[boundary as keyof typeof calls]().catch(e => e);
+    expect(error.message).toBe(expected[boundary as keyof typeof expected]);
+    expect(error.cause).toBe(cause);
+  },
+);
+
+it('registry page handlers bypass the proxied by-id lookup', async () => {
+  const f = unloadedPage();
+  f.getNodeByIdAsync.mockRejectedValue(new Error('lookup unavailable'));
+  f.finish();
+  const handlers = createSandboxHandlers(f.figmaCtx);
+  const result = await Promise.resolve(
+    handlers.rename_page!({ pageId: f.page.id, name: 'After' }),
+  ).catch(error => error);
+  expect(f.getNodeByIdAsync).not.toHaveBeenCalled();
+  expect(result).toEqual({
+    ok: true,
+    nodeId: f.page.id,
+  });
+  expect(f.page.name).toBe('After');
+});
 
 // Figma's own rejection, measured live while the by-id lookup was timing out: a bare string, not an Error.
 const BY_ID_TIMEOUT =
@@ -98,16 +153,119 @@ describe('a healthy by-id lookup is used as is', () => {
 });
 
 describe('lookup rejection context', () => {
-  it.each(['8:8', 'I8:8;8:9'])('names the failing plain or root lookup for %s', async id => {
+  it('probes only after the target retry is exhausted, without retrying a failed probe', async () => {
+    vi.useFakeTimers();
+    try {
+      const lookup = vi
+        .fn<(id: string) => Promise<BaseNode | null>>()
+        .mockRejectedValue(BY_ID_TIMEOUT);
+      const reading = withInstanceIdLookup({
+        currentPage: { id: '0:1' },
+        getNodeByIdAsync: lookup,
+      } as unknown as typeof figma)
+        .getNodeByIdAsync('8:8')
+        .catch(error => error);
+      await vi.runAllTimersAsync();
+      expect((await reading).message).toContain('Reload the plugin');
+      expect(lookup.mock.calls).toEqual([['8:8'], ['8:8'], ['0:1']]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('treats a probe resolving null as an answering session', async () => {
+    const lookup = vi.fn<(id: string) => Promise<BaseNode | null>>(async id => {
+      if (id === '0:1') return null;
+      throw new Error('target failed');
+    });
     const ctx = withInstanceIdLookup({
-      getNodeByIdAsync: async () => Promise.reject(BY_ID_TIMEOUT),
+      currentPage: { id: '0:1' },
+      getNodeByIdAsync: lookup,
     } as unknown as typeof figma);
-    const failure = ctx.getNodeByIdAsync(id);
-    await expect(failure).rejects.toBeInstanceOf(Error);
-    await expect(failure).rejects.toMatchObject({ cause: BY_ID_TIMEOUT });
-    await expect(failure).rejects.toThrow('getNodeByIdAsync(8:8)');
-    await expect(failure).rejects.toThrow(BY_ID_TIMEOUT);
-    await expect(failure).rejects.toThrow(/id may not exist.*other reads may still work/);
+    await expect(ctx.getNodeByIdAsync('8:8')).rejects.toThrow('session answered other reads');
+    expect(lookup.mock.calls).toEqual([['8:8'], ['0:1']]);
+  });
+  it.each([true, false])(
+    'probes a loaded page once and attributes failures (healthy=%s)',
+    async healthy => {
+      const lookup = vi.fn<(id: string) => Promise<BaseNode | null>>(async id => {
+        if (id === '0:1') {
+          if (healthy) return { id } as BaseNode;
+          throw new Error('probe failed');
+        }
+        throw new Error('target failed');
+      });
+      const ctx = withInstanceIdLookup({
+        currentPage: { id: '0:1' },
+        getNodeByIdAsync: lookup,
+      } as unknown as typeof figma);
+      const errors = await Promise.all(
+        ['8:8', '8:9'].map(id => ctx.getNodeByIdAsync(id).catch(error => error)),
+      );
+      for (const error of errors) {
+        expect(error.message).toContain(
+          healthy ? 'session answered other reads' : 'session is not answering reads',
+        );
+        expect(error.message).toContain(healthy ? 'reload is not indicated' : 'Reload the plugin');
+        expect(error.cause.message).toBe('target failed');
+        expect(error.message).toMatch(
+          healthy
+            ? /missing.*deleted.*page not loaded.*not yet synced/
+            : /session is not answering reads/,
+        );
+        expect(error.message).toMatch(healthy ? /exporting.*parent/ : /Reload the plugin/);
+        expect(error.message.includes('Reload the plugin')).toBe(!healthy);
+      }
+      expect(lookup.mock.calls.filter(([id]) => id === '0:1')).toHaveLength(1);
+    },
+  );
+
+  it('does not probe a resolved null', async () => {
+    const lookup = vi.fn<() => Promise<null>>(async () => null);
+    const ctx = withInstanceIdLookup({ getNodeByIdAsync: lookup } as unknown as typeof figma);
+    expect(await ctx.getNodeByIdAsync('8:8')).toBeNull();
+    expect(lookup).toHaveBeenCalledExactlyOnceWith('8:8');
+  });
+  it.each([
+    [BY_ID_TIMEOUT, 2, /failed twice/],
+    [new TypeError('other failure'), 1, /failed: other failure.*session is not answering reads/],
+    [new TypeError(BY_ID_TIMEOUT), 1, /failed: Unable to establish/],
+    ['Unable to establish connection to Figma after 10 seconds', 1, /failed: Unable to establish/],
+  ])('bounds attempts and preserves other rejections: %s', async (cause, attempts, message) => {
+    vi.useFakeTimers();
+    try {
+      const lookup = vi.fn<(id: string) => Promise<BaseNode | null>>().mockRejectedValue(cause);
+      const reading = withInstanceIdLookup({
+        getNodeByIdAsync: lookup,
+      } as unknown as typeof figma)
+        .getNodeByIdAsync('8:8')
+        .catch(error => error);
+      await vi.runAllTimersAsync();
+      const error = await reading;
+      expect(error.message).toMatch(message as RegExp);
+      expect(lookup).toHaveBeenCalledTimes(attempts as number);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it.each(['8:8', 'I8:8;8:9'])('names the failing plain or root lookup for %s', async id => {
+    vi.useFakeTimers();
+    try {
+      const ctx = withInstanceIdLookup({
+        getNodeByIdAsync: async () => Promise.reject(BY_ID_TIMEOUT),
+      } as unknown as typeof figma);
+      const failure = ctx.getNodeByIdAsync(id);
+      const observed = failure.catch(error => error);
+      await vi.runAllTimersAsync();
+      await observed;
+      await expect(failure).rejects.toBeInstanceOf(Error);
+      await expect(failure).rejects.toMatchObject({ cause: { cause: BY_ID_TIMEOUT } });
+      await expect(failure).rejects.toThrow('getNodeByIdAsync(8:8)');
+      await expect(failure).rejects.toThrow(BY_ID_TIMEOUT);
+      await expect(failure).rejects.toThrow(/session is not answering reads.*Reload the plugin/);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

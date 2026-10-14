@@ -17,8 +17,10 @@ import {
 import { describe, expect, it, vi } from 'vitest';
 
 import { PluginToolFailure } from '../../protocol/bridge.js';
+import type { PluginBridgeMessage } from '../../protocol/bridge.js';
 import { RelayClient, type WebSocketCtor } from '../../ui/relay/client.js';
 import { ACTIVITY_LIMIT } from '../../ui/relay/state.js';
+import { createToolBridge } from '../../ui/sandbox/tool-bridge.js';
 
 interface FakeSocket {
   url: string;
@@ -100,6 +102,44 @@ const helloResult = (overrides: Partial<HelloResult> = {}): HelloResult => ({
 });
 
 describe('RelayClient', () => {
+  it('keeps a boundary-attributed error intact on the wire', async () => {
+    const { WS, sockets } = buildFakeFactory(sock => {
+      sock.fireOpen();
+      const hello = decodeEnvelope(sock.sent[0]!) as RequestEnvelope;
+      sock.fireReceive(
+        createResponse({ id: hello.id, sessionId: hello.sessionId, result: helloResult() }),
+      );
+    });
+    const client = new RelayClient({ ports: [43001], clientVersion: '1.0.0', WS });
+    client.setToolHandler(async () => {
+      throw new Error('exportAsync(1:2) failed: unavailable');
+    });
+    await client.connect();
+    const socket = sockets[0]!;
+    const reply = new Promise<Envelope>(resolve => {
+      const send = socket.send.bind(socket);
+      socket.send = bytes => {
+        send(bytes);
+        const env = decodeEnvelope(bytes as Uint8Array);
+        if (env.kind === 'err') resolve(env);
+      };
+    });
+    try {
+      socket.fireReceive(
+        createRequest({
+          id: 'failed-export',
+          sessionId: client.sessionId,
+          method: 'get_screenshot',
+        }),
+      );
+      expect(await reply).toMatchObject({
+        kind: 'err',
+        error: { code: ErrorCode.Internal, message: 'exportAsync(1:2) failed: unavailable' },
+      });
+    } finally {
+      client.disconnect();
+    }
+  });
   it('connects, sends hello, and reaches connected state', async () => {
     const { WS, sockets } = buildFakeFactory(sock => {
       sock.fireOpen();
@@ -657,6 +697,56 @@ describe('RelayClient', () => {
     await client.connect();
     return { client, live: liveSock! };
   };
+
+  it('preserves unknown-outcome progress and TIMEOUT from a pending batch bridge', async () => {
+    vi.useFakeTimers();
+    let receive: ((raw: unknown) => void) | undefined;
+    const calls: PluginBridgeMessage[] = [];
+    const bridge = createToolBridge({
+      timeoutMs: 20,
+      postMessage: msg => calls.push(msg),
+      subscribe: cb => {
+        receive = cb;
+        return () => {
+          receive = undefined;
+        };
+      },
+    });
+    const { client, live } = await connectWithLiveSocket(bridge.handler);
+    try {
+      live.fireReceive(
+        createRequest({
+          id: 'pending-write',
+          sessionId: client.sessionId,
+          method: 'batch',
+          params: { ops: [{}, {}] },
+        }),
+      );
+      receive!({
+        tag: '@figwright/bridge',
+        kind: 'tool-progress',
+        id: calls[0]!.id,
+        phase: 'apply',
+        completed: [0],
+        inFlight: [1],
+        rolledBack: [],
+      });
+      await vi.advanceTimersByTimeAsync(20);
+      expect(decodeEnvelope(live.sent.at(-1)!)).toMatchObject({
+        kind: 'err',
+        error: {
+          code: ErrorCode.Timeout,
+          message: expect.stringMatching(
+            /outcome is unknown.*phase=apply.*completed op indexes=\[0\].*in-flight op indexes=\[1\].*Read back the targets before any retry/,
+          ),
+        },
+      });
+    } finally {
+      bridge.dispose();
+      await client.disconnect();
+      vi.useRealTimers();
+    }
+  });
 
   it('records a successful tool call in activity with ok status and duration', async () => {
     const { client, live } = await connectWithLiveSocket(async () => ({ ok: true }));

@@ -51,7 +51,9 @@ export const createIdempotencyCache = (
  */
 export const idempotent =
   (cache: IdempotencyCache, handler: SandboxToolHandler): SandboxToolHandler =>
-  params => {
+  (params, context) => {
     const requestId = (params as { requestId?: unknown } | null)?.requestId;
-    return cache.run(typeof requestId === 'string' ? requestId : undefined, () => handler(params));
+    return cache.run(typeof requestId === 'string' ? requestId : undefined, () =>
+      handler(params, context),
+    );
   };
