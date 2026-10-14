@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { createUpdateFlowsHandler } from '../../src/handlers/update-flows.js';
 import { unloadedPage } from '../page-fake.js';
+import { type FakeNode, makeFlowsFigma } from './flows-fake.js';
 
 it('loads a page from root.children before accessing it', async () => {
   const f = unloadedPage();
@@ -14,7 +15,6 @@ it('loads a page from root.children before accessing it', async () => {
   expect(await running).toEqual({ ok: true, pageId: f.page.id, flows: [] });
   expect(f.getNodeByIdAsync).not.toHaveBeenCalled();
 });
-import { type FakeNode, makeFlowsFigma } from './flows-fake.js';
 
 /**
  * A page "P" with four top-level frames A–D, flows on A, B and C, plus the things a flow cannot

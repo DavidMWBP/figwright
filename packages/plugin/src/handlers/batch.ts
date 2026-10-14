@@ -162,7 +162,9 @@ const propsInverse = (
 ): BatchInverse => ({
   async capture(figmaCtx, params) {
     const id = stringParam(params, opts.idKey ?? 'nodeId', tool);
-    const node = await nodeOf(figmaCtx, id, tool);
+    const node =
+      tool === 'rename_page' ? await loadPage(figmaCtx, id) : await nodeOf(figmaCtx, id, tool);
+    if (node === null) throw new Error(`batch/${tool}: node ${id} not found`);
     const required = props[0]!;
     if (!(required in node)) throw new Error(`batch/${tool}: node ${id} has no ${required}`);
     const state: PropsState = {

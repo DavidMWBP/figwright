@@ -37,6 +37,20 @@ const makeNode = (overrides: Partial<Node>): Node =>
 const makeFollower = (overrides: Partial<Follower>): Follower => overrides as unknown as Follower;
 
 describe('dispatchTool', () => {
+  it('keeps an older leader reply without attribution unchanged', async () => {
+    const node = makeNode({ isLeader: () => false });
+    const follower = makeFollower({
+      sendRpc: async () => ({
+        kind: 'err',
+        requestId: 'r',
+        code: ErrorCode.InvalidParams,
+        message: 'older leader rejected input',
+      }),
+    });
+    await expect(dispatchTool({ node, follower }, 'get_node', {})).rejects.toMatchObject({
+      message: 'older leader rejected input',
+    });
+  });
   it('names the absence of an answering session when the follower cannot reach the leader', async () => {
     const node = makeNode({ isLeader: () => false });
     const follower = makeFollower({
@@ -579,7 +593,7 @@ describe('dispatchTool', () => {
     await expect(dispatchTool({ node, follower }, 'x', undefined)).rejects.toMatchObject({
       name: 'DispatchError',
       code: ErrorCode.InvalidParams,
-      message: 'bad input (no session answered)',
+      message: 'bad input',
     });
   });
 

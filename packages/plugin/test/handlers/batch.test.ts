@@ -144,6 +144,30 @@ it.each([
   }
 });
 
+it('captures and renames an unloaded page', async () => {
+  const f = unloadedPage();
+  let name = 'Before';
+  Object.defineProperty(f.page, 'name', {
+    get: () => {
+      // This fixture's children getter asserts that loadAsync has completed.
+      void f.page.children;
+      return name;
+    },
+    set: (value: string) => {
+      name = value;
+    },
+  });
+  f.finish();
+  const result = await Promise.resolve(
+    createSandboxHandlers(f.figmaCtx).batch!({
+      ops: [{ tool: 'rename_page', params: { pageId: f.page.id, name: 'After' } }],
+    }),
+  ).catch(error => error);
+  expect(result).toMatchObject({ ok: true, results: [{ ok: true }] });
+  expect(f.page.name).toBe('After');
+  expect(f.loadAsync).toHaveBeenCalled();
+});
+
 it.each(['navigate_to_page', 'update_flows'])('loads the page before capturing %s', async tool => {
   const f = unloadedPage();
   const handler = createBatchHandler(f.figmaCtx, {

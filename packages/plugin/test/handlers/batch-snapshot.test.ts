@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   captureGeometry,
@@ -12,11 +12,23 @@ import {
   writeIfDifferent,
   resolveVariable,
 } from '../../src/handlers/batch-snapshot.js';
+import { createBatchHandler } from '../../src/handlers/batch.js';
 import { withInstanceIdLookup } from '../../src/node-lookup.js';
 
 it('attributes a failed variable capture before any batch write', async () => {
   const cause = new Error('unavailable');
+  const target = {
+    id: '1:2',
+    type: 'RECTANGLE',
+    opacity: 0.5,
+    boundVariables: { opacity: { type: 'VARIABLE_ALIAS', id: 'V:2' } },
+  };
+  const write = vi.fn<() => { ok: boolean }>(() => {
+    target.opacity = 1;
+    return { ok: true };
+  });
   const ctx = withInstanceIdLookup({
+    getNodeByIdAsync: async () => target,
     variables: {
       getVariableByIdAsync: async () => {
         throw cause;
@@ -26,6 +38,13 @@ it('attributes a failed variable capture before any batch write', async () => {
   const error = await resolveVariable(ctx, 'V:2').catch(e => e);
   expect(error.message).toBe('getVariableByIdAsync(V:2) failed: unavailable');
   expect(error.cause).toBe(cause);
+  await expect(
+    createBatchHandler(ctx, { set_opacity: write })({
+      ops: [{ tool: 'set_opacity', params: { nodeId: target.id, opacity: 1 } }],
+    }),
+  ).rejects.toThrow('getVariableByIdAsync(V:2) failed: unavailable');
+  expect(write).not.toHaveBeenCalled();
+  expect(target.opacity).toBe(0.5);
 });
 
 type Node = Record<string, unknown> & { id: string };
