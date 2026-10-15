@@ -1,5 +1,9 @@
 import type { BatchResult, FlowStartingPoint } from '@figwright/shared';
-import { BATCH_ROLLBACK_RESERVE_MS, getToolBudget } from '@figwright/shared';
+import {
+  BATCH_ROLLBACK_RESERVE_MS,
+  getToolBudget,
+  SetAnnotationsItemSchema,
+} from '@figwright/shared';
 
 import type { BatchProgress } from '../../protocol/bridge.js';
 import type { SandboxHandlers, SandboxToolHandler } from '../dispatcher.js';
@@ -1703,13 +1707,30 @@ const variableModeInverse: BatchInverse = {
 const INVERSES: Readonly<Record<string, BatchInverse>> = {
   set_annotations: {
     async capture(figmaCtx, params) {
-      const { items } = params as { items: { nodeId: string }[] };
+      const items = paramsOf(params).items;
+      if (!Array.isArray(items) || items.length === 0)
+        throw new Error('set_annotations: items must be a non-empty array');
       return Promise.all(
-        items.map(async ({ nodeId }) => {
-          const node = await figmaCtx.getNodeByIdAsync(nodeId);
-          if (node === null || !('annotations' in node))
-            throw new Error(`set_annotations: node ${nodeId} does not support annotations`);
-          return { id: nodeId, annotations: node.annotations };
+        items.map(async (item, index) => {
+          try {
+            const checked = SetAnnotationsItemSchema.safeParse(item);
+            if (!checked.success)
+              throw new Error(
+                checked.error.issues
+                  .map(issue => `${issue.path.join('.')}: ${issue.message}`)
+                  .join('; '),
+              );
+            const { nodeId } = checked.data;
+            const node = await figmaCtx.getNodeByIdAsync(nodeId);
+            if (node === null || !('annotations' in node))
+              throw new Error(`node ${nodeId} not found or does not support annotations`);
+            return { id: nodeId, annotations: node.annotations };
+          } catch (error) {
+            throw new Error(
+              `set_annotations: item ${index}: ${error instanceof Error ? error.message : String(error)}`,
+              { cause: error },
+            );
+          }
         }),
       );
     },
