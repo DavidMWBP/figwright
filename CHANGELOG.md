@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### 🚀 Enhancements
+
+- **design:** Let set_layout_props set a frame's prototype scroll axis with overflowDirection
+
 ## v0.6.0
 
 [compare changes](https://github.com/awdr74100/figwright/compare/v0.5.0...v0.6.0)

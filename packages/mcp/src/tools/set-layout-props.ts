@@ -8,7 +8,8 @@ export const setLayoutPropsTool: ToolSpec = {
   name: SET_LAYOUT_PROPS_TOOL_NAME,
   description:
     "Set a node's sizing, child properties and content clipping. clipsContent controls whether " +
-    'a frame-like container clips its children; it also works without auto-layout. layoutSizingHorizontal / ' +
+    'a frame-like container clips its children; it also works without auto-layout. ' +
+    'overflowDirection sets the prototype scroll axis of a clipping frame; omitted leaves it unchanged. layoutSizingHorizontal / ' +
     'layoutSizingVertical (HUG = shrink to fit children, FILL = stretch to fill the auto-layout ' +
     'parent, FIXED = keep the current size) are the preferred way to size a frame to its content ' +
     '(HUG) or make a child fill its container (FILL) — reach for these instead of guessing pixel ' +
@@ -22,6 +23,10 @@ export const setLayoutPropsTool: ToolSpec = {
   inputSchema: z.object({
     nodeId: z.string().describe('Node id — a frame-like container, or an auto-layout child'),
     clipsContent: z.boolean().optional().describe('Clip children to the container bounds'),
+    overflowDirection: z
+      .enum(['NONE', 'HORIZONTAL', 'VERTICAL', 'BOTH'])
+      .optional()
+      .describe('Prototype scroll axis of a clipping frame; NONE disables scrolling'),
     layoutSizingHorizontal: z
       .enum(['FIXED', 'HUG', 'FILL'])
       .optional()

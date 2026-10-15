@@ -19,6 +19,7 @@ const setup = () => {
     layoutAlign: 'INHERIT',
     layoutMode: 'NONE',
     clipsContent: true,
+    overflowDirection: 'HORIZONTAL',
     cornerRadius: 12,
     cornerSmoothing: 0.2,
     relativeTransform: [
@@ -76,6 +77,66 @@ const setup = () => {
 };
 
 describe('basic node property round-trips', () => {
+  it.each(['NONE', 'HORIZONTAL', 'VERTICAL', 'BOTH'])(
+    'writes overflowDirection=%s and reads it back',
+    async value => {
+      const target = setup();
+      await target.call('set_layout_props', { nodeId: '1:1', overflowDirection: value });
+      expect(target.frame.overflowDirection).toBe(value);
+      const expected = value === 'NONE' ? undefined : value;
+      expect(target.read().flat.overflowDirection).toBe(expected);
+      expect(target.read().full.overflowDirection).toBe(expected);
+    },
+  );
+
+  it('leaves the scroll axis unchanged when omitted', async () => {
+    const target = setup();
+    await target.call('set_layout_props', { nodeId: '1:1', clipsContent: false });
+    expect(target.frame.overflowDirection).toBe('HORIZONTAL');
+  });
+
+  it('rejects a rectangle without a scroll axis before changing layout properties', async () => {
+    const target = setup();
+    Object.assign(target.rectangle, { layoutAlign: 'INHERIT' });
+    await expect(
+      target.handlers.set_layout_props!({
+        nodeId: '1:3',
+        overflowDirection: 'VERTICAL',
+        layoutAlign: 'STRETCH',
+      }),
+    ).rejects.toThrow(/does not support overflowDirection/);
+    expect(target.rectangle).toMatchObject({ layoutAlign: 'INHERIT' });
+    expect(target.rectangle).not.toHaveProperty('overflowDirection');
+  });
+
+  it.each(['DIAGONAL', '', null, 0, false])(
+    'rejects invalid overflowDirection=%s at both schemas and the handler without writing',
+    async value => {
+      const target = setup();
+      const input = { nodeId: '1:1', overflowDirection: value, clipsContent: false };
+      const spec = ALL_TOOL_SPECS.find(tool => tool.name === 'set_layout_props')!;
+      expect(spec.inputSchema.safeParse(input).success).toBe(false);
+      expect(WIRE_TOOL_SCHEMAS.get('set_layout_props')!.safeParse(input).success).toBe(false);
+      await expect(target.handlers.set_layout_props!(input)).rejects.toThrow(TypeError);
+      expect(target.frame).toMatchObject({ overflowDirection: 'HORIZONTAL', clipsContent: true });
+    },
+  );
+
+  it('restores the scroll axis after a later batch operation fails', async () => {
+    const target = setup();
+    await expect(
+      target.call('batch', {
+        ops: [
+          { tool: 'set_layout_props', params: { nodeId: '1:1', overflowDirection: 'BOTH' } },
+          { tool: 'set_fills', params: { nodeId: '1:3', fills: [{ type: 'GRADIENT_LINEAR' }] } },
+        ],
+      }),
+    ).rejects.toThrow(/rolled back 1/);
+    expect(target.frame.overflowDirection).toBe('HORIZONTAL');
+    expect(target.read().flat.overflowDirection).toBe('HORIZONTAL');
+    expect(target.read().full.overflowDirection).toBe('HORIZONTAL');
+  });
+
   it.each([false, true])(
     'writes clipsContent=%s on a non-auto-layout frame and reads it back',
     async value => {

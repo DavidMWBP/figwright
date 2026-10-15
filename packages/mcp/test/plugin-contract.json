@@ -225,6 +225,7 @@
       "minHeight",
       "minWidth",
       "nodeId",
+      "overflowDirection",
       "requestId"
     ],
     "set_layout_grids": [
