@@ -44,6 +44,7 @@ export const createSetLayoutPropsHandler =
     const p = (params ?? {}) as {
       nodeId?: unknown;
       clipsContent?: unknown;
+      overflowDirection?: unknown;
       layoutSizingHorizontal?: unknown;
       layoutSizingVertical?: unknown;
       layoutAlign?: unknown;
@@ -59,6 +60,17 @@ export const createSetLayoutPropsHandler =
     if (p.clipsContent !== undefined && typeof p.clipsContent !== 'boolean') {
       throw new TypeError('set_layout_props: clipsContent must be a boolean');
     }
+    if (
+      p.overflowDirection !== undefined &&
+      p.overflowDirection !== 'NONE' &&
+      p.overflowDirection !== 'HORIZONTAL' &&
+      p.overflowDirection !== 'VERTICAL' &&
+      p.overflowDirection !== 'BOTH'
+    ) {
+      throw new TypeError(
+        'set_layout_props: overflowDirection must be NONE, HORIZONTAL, VERTICAL or BOTH',
+      );
+    }
     if (p.layoutGrow !== undefined && (typeof p.layoutGrow !== 'number' || p.layoutGrow < 0)) {
       throw new TypeError('set_layout_props: layoutGrow must be a non-negative number');
     }
@@ -73,6 +85,9 @@ export const createSetLayoutPropsHandler =
     if (node === null) throw new Error(`set_layout_props: node ${p.nodeId} not found`);
     if (p.clipsContent !== undefined && !('clipsContent' in node)) {
       throw new Error(`set_layout_props: node ${p.nodeId} does not support clipsContent`);
+    }
+    if (p.overflowDirection !== undefined && !('overflowDirection' in node)) {
+      throw new Error(`set_layout_props: node ${p.nodeId} does not support overflowDirection`);
     }
     if (!('layoutAlign' in node)) {
       throw new Error(`set_layout_props: node ${p.nodeId} has no auto-layout child properties`);
@@ -113,6 +128,9 @@ export const createSetLayoutPropsHandler =
 
     if (typeof p.clipsContent === 'boolean') {
       (node as { clipsContent: boolean }).clipsContent = p.clipsContent;
+    }
+    if (p.overflowDirection !== undefined) {
+      (node as { overflowDirection: OverflowDirection }).overflowDirection = p.overflowDirection;
     }
     const result: MutateResult = { ok: true, nodeId: node.id };
     return result;

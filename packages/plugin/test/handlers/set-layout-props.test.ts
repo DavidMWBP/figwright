@@ -7,6 +7,30 @@ const fakeFigma = (lookup: Record<string, unknown>): typeof figma =>
   ({ getNodeByIdAsync: async (id: string) => lookup[id] ?? null }) as unknown as typeof figma;
 
 describe('set_layout_props handler', () => {
+  it.each(['NONE', 'HORIZONTAL', 'VERTICAL', 'BOTH'])(
+    'writes overflowDirection=%s',
+    async value => {
+      const node = { id: '1:1', layoutAlign: 'INHERIT', overflowDirection: 'VERTICAL' };
+      await createSetLayoutPropsHandler(fakeFigma({ '1:1': node }))({
+        nodeId: '1:1',
+        overflowDirection: value,
+      });
+      expect(node.overflowDirection).toBe(value);
+    },
+  );
+
+  it('rejects an invalid scroll axis before writing other fields', async () => {
+    const node = { id: '1:1', layoutAlign: 'INHERIT', overflowDirection: 'NONE' };
+    await expect(
+      createSetLayoutPropsHandler(fakeFigma({ '1:1': node }))({
+        nodeId: '1:1',
+        overflowDirection: 'DIAGONAL',
+        layoutAlign: 'STRETCH',
+      }),
+    ).rejects.toThrow(TypeError);
+    expect(node).toMatchObject({ layoutAlign: 'INHERIT', overflowDirection: 'NONE' });
+  });
+
   it('sets layoutAlign / layoutGrow / layoutPositioning', async () => {
     const node = { id: '1:1', layoutAlign: 'INHERIT', layoutGrow: 0, layoutPositioning: 'AUTO' };
     const result = (await createSetLayoutPropsHandler(fakeFigma({ '1:1': node }))({

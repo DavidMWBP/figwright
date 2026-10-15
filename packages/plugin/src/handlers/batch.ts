@@ -721,7 +721,7 @@ const layoutPropsInverse: BatchInverse = {
     const state: GeometryState = {
       id,
       geometry: captureGeometry(node as SceneNode),
-      props: await captureProps(figmaCtx, node, ['clipsContent']),
+      props: await captureProps(figmaCtx, node, ['clipsContent', 'overflowDirection']),
       bindings: await captureBindings(figmaCtx, node, [
         'minWidth',
         'maxWidth',
