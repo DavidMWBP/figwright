@@ -13,6 +13,7 @@ export const createSetAnnotationsHandler =
 
     const seen = new Set<string>();
     const plan: { node: BaseNode & AnnotationsMixin; annotations: Annotation[] }[] = [];
+    /* eslint-disable no-await-in-loop -- validate in input order so the first bad item is deterministic */
     for (const [index, item] of p.items.entries()) {
       try {
         const checked = SetAnnotationsItemSchema.safeParse(item);
@@ -47,14 +48,14 @@ export const createSetAnnotationsHandler =
         }
         plan.push({
           node,
-          annotations: parsed.annotations.map(annotation => ({
-            ...(annotation.label !== undefined && { label: annotation.label }),
-            ...(annotation.labelMarkdown !== undefined && {
-              labelMarkdown: annotation.labelMarkdown,
-            }),
-            ...(annotation.categoryId !== undefined && { categoryId: annotation.categoryId }),
-            ...(annotation.properties !== undefined && { properties: annotation.properties }),
-          })),
+          annotations: parsed.annotations.map(annotation => {
+            const value: { -readonly [Key in keyof Annotation]: Annotation[Key] } = {};
+            for (const key of ['label', 'labelMarkdown', 'categoryId'] as const) {
+              if (annotation[key] !== undefined) value[key] = annotation[key];
+            }
+            if (annotation.properties !== undefined) value.properties = annotation.properties;
+            return value;
+          }),
         });
       } catch (error) {
         throw new Error(
@@ -63,6 +64,7 @@ export const createSetAnnotationsHandler =
         );
       }
     }
+    /* eslint-enable no-await-in-loop */
     const results = plan.map(({ node, annotations }) => {
       node.annotations = p.mode === 'append' ? [...node.annotations, ...annotations] : annotations;
       return { nodeId: node.id, count: node.annotations.length };

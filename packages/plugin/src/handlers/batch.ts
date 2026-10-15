@@ -1714,13 +1714,15 @@ const INVERSES: Readonly<Record<string, BatchInverse>> = {
       );
     },
     async undo(figmaCtx, _params, captured) {
-      for (const { id, annotations } of captured as {
+      const snapshots = captured as {
         id: string;
         annotations: readonly Annotation[];
-      }[]) {
-        const node = await live(figmaCtx, id);
-        if (node !== null && 'annotations' in node) node.annotations = annotations;
-      }
+      }[];
+      const nodes = await Promise.all(snapshots.map(({ id }) => live(figmaCtx, id)));
+      nodes.forEach((node, index) => {
+        if (node !== null && 'annotations' in node)
+          node.annotations = snapshots[index]!.annotations;
+      });
       return undefined;
     },
     touches: (_params, captured) => snapshotIds(captured),
