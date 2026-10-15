@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import type { BatchResult } from '@figwright/shared';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { SandboxHandlers } from '../../src/dispatcher.js';
+import type { SandboxHandlers, SandboxToolHandler } from '../../src/dispatcher.js';
 import { createAddComponentPropertyHandler } from '../../src/handlers/add-component-property.js';
 import { createAddVariableModeHandler } from '../../src/handlers/add-variable-mode.js';
 import { createApplyAnimationStyleHandler } from '../../src/handlers/apply-animation-style.js';
@@ -252,7 +252,7 @@ it.each([
     /set_annotations: item 1: node missing not found or does not support annotations/,
   ],
 ])('rejects annotation capture with %s before any write', async (_name, invalid, message) => {
-  const write = vi.fn();
+  const write = vi.fn<(annotations: Annotation[]) => void>();
   const node = { id: '1:1', name: 'Before', annotations: [{ label: 'before' }] };
   Object.defineProperty(node, 'annotations', { get: () => [{ label: 'before' }], set: write });
   const { figmaCtx } = makeFigma({
@@ -261,8 +261,8 @@ it.each([
   });
   const lookup = vi.spyOn(figmaCtx, 'getNodeByIdAsync');
   const writes = realWrites(figmaCtx);
-  const rename = vi.fn(writes.rename_node!);
-  const annotate = vi.fn(writes.set_annotations!);
+  const rename = vi.fn<SandboxToolHandler>(writes.rename_node!);
+  const annotate = vi.fn<SandboxToolHandler>(writes.set_annotations!);
   const handler = createBatchHandler(figmaCtx, {
     ...writes,
     rename_node: rename,
