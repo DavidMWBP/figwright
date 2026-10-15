@@ -94,6 +94,7 @@ import { scanComponentsTool } from './scan-components.js';
 import { scanNodesByTypesTool } from './scan-nodes-by-types.js';
 import { scanTextNodesTool } from './scan-text-nodes.js';
 import { searchNodesTool } from './search-nodes.js';
+import { setAnnotationsTool } from './set-annotations.js';
 import { setArcTool } from './set-arc.js';
 import { setAutoLayoutTool } from './set-auto-layout.js';
 import { setBlendModeTool } from './set-blend-mode.js';
@@ -184,6 +185,7 @@ const DECLARED_TOOL_SPECS: readonly ToolSpec[] = [
   createFrameTool,
   setOpacityTool,
   setVisibleTool,
+  setAnnotationsTool,
   renameNodeTool,
   deleteNodesTool,
   createTextTool,

@@ -27,6 +27,7 @@ import { createRenameNodeHandler } from '../../src/handlers/rename-node.js';
 import { createRenameVariableHandler } from '../../src/handlers/rename-variable.js';
 import { createReorderNodesHandler } from '../../src/handlers/reorder-nodes.js';
 import { createReparentNodesHandler } from '../../src/handlers/reparent-nodes.js';
+import { createSetAnnotationsHandler } from '../../src/handlers/set-annotations.js';
 import { createSetAutoLayoutHandler } from '../../src/handlers/set-auto-layout.js';
 import { createSetCornerRadiusHandler } from '../../src/handlers/set-corner-radius.js';
 import { createSetFillsHandler } from '../../src/handlers/set-fills.js';
@@ -219,6 +220,7 @@ const makeFigma = (initial: Record<string, Record<string, unknown>>) => {
 };
 
 const realWrites = (figmaCtx: typeof figma): SandboxHandlers => ({
+  set_annotations: createSetAnnotationsHandler(figmaCtx),
   rename_node: createRenameNodeHandler(figmaCtx),
   set_opacity: createSetOpacityHandler(figmaCtx),
   set_fills: createSetFillsHandler(figmaCtx),
@@ -234,6 +236,51 @@ const realWrites = (figmaCtx: typeof figma): SandboxHandlers => ({
 });
 
 const SOLID = (r: number): unknown => ({ type: 'SOLID', color: { r, g: 0, b: 0 } });
+
+it.each(['append', 'replace'])(
+  'restores complete annotations on every node after %s rolls back',
+  async mode => {
+    const before = [
+      { labelMarkdown: '**before**', categoryId: 'known', properties: [{ type: 'fills' }] },
+    ];
+    const { figmaCtx, store } = makeFigma({
+      '1:1': { id: '1:1', annotations: before, opacity: 1 },
+      '1:2': { id: '1:2', annotations: [] },
+    });
+    const handler = createBatchHandler(figmaCtx, {
+      ...realWrites(figmaCtx),
+      set_opacity: async () => {
+        throw new Error('deliberate failure');
+      },
+    });
+    const error = await Promise.resolve(
+      handler({
+        ops: [
+          {
+            tool: 'set_annotations',
+            params: {
+              mode,
+              items: [
+                { nodeId: '1:1', annotations: [{ label: 'after' }] },
+                { nodeId: '1:2', annotations: [{ label: 'new' }] },
+              ],
+            },
+          },
+          { tool: 'set_opacity', params: { nodeId: '1:1', opacity: 0.5 } },
+        ],
+      }),
+    ).catch((e: Error) => e);
+    expect({
+      error,
+      first: store.get('1:1')?.annotations,
+      second: store.get('1:2')?.annotations,
+    }).toEqual({
+      error: expect.objectContaining({ message: expect.stringMatching(/rolled back 1/) }),
+      first: before,
+      second: [],
+    });
+  },
+);
 
 describe('batch deadlines', () => {
   it.each([1, 12, 48])(
