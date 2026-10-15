@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import type { BatchResult } from '@figwright/shared';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { SandboxHandlers } from '../../src/dispatcher.js';
+import type { SandboxHandlers, SandboxToolHandler } from '../../src/dispatcher.js';
 import { createAddComponentPropertyHandler } from '../../src/handlers/add-component-property.js';
 import { createAddVariableModeHandler } from '../../src/handlers/add-variable-mode.js';
 import { createApplyAnimationStyleHandler } from '../../src/handlers/apply-animation-style.js';
@@ -27,6 +27,7 @@ import { createRenameNodeHandler } from '../../src/handlers/rename-node.js';
 import { createRenameVariableHandler } from '../../src/handlers/rename-variable.js';
 import { createReorderNodesHandler } from '../../src/handlers/reorder-nodes.js';
 import { createReparentNodesHandler } from '../../src/handlers/reparent-nodes.js';
+import { createSetAnnotationsHandler } from '../../src/handlers/set-annotations.js';
 import { createSetAutoLayoutHandler } from '../../src/handlers/set-auto-layout.js';
 import { createSetCornerRadiusHandler } from '../../src/handlers/set-corner-radius.js';
 import { createSetFillsHandler } from '../../src/handlers/set-fills.js';
@@ -219,6 +220,7 @@ const makeFigma = (initial: Record<string, Record<string, unknown>>) => {
 };
 
 const realWrites = (figmaCtx: typeof figma): SandboxHandlers => ({
+  set_annotations: createSetAnnotationsHandler(figmaCtx),
   rename_node: createRenameNodeHandler(figmaCtx),
   set_opacity: createSetOpacityHandler(figmaCtx),
   set_fills: createSetFillsHandler(figmaCtx),
@@ -234,6 +236,102 @@ const realWrites = (figmaCtx: typeof figma): SandboxHandlers => ({
 });
 
 const SOLID = (r: number): unknown => ({ type: 'SOLID', color: { r, g: 0, b: 0 } });
+
+it.each([
+  ['non-array items', 'invalid', /set_annotations: items must be a non-empty array/],
+  ['empty items', [], /set_annotations: items must be a non-empty array/],
+  ['missing nodeId', [{ annotations: [] }], /set_annotations: item 1: nodeId:/],
+  [
+    'page node',
+    [{ nodeId: '0:1', annotations: [] }],
+    /set_annotations: item 1: node 0:1 not found or does not support annotations/,
+  ],
+  [
+    'missing node',
+    [{ nodeId: 'missing', annotations: [] }],
+    /set_annotations: item 1: node missing not found or does not support annotations/,
+  ],
+])('rejects annotation capture with %s before any write', async (_name, invalid, message) => {
+  const write = vi.fn<(annotations: Annotation[]) => void>();
+  const node = { id: '1:1', name: 'Before', annotations: [{ label: 'before' }] };
+  Object.defineProperty(node, 'annotations', { get: () => [{ label: 'before' }], set: write });
+  const { figmaCtx } = makeFigma({
+    '1:1': node,
+    '0:1': { id: '0:1', type: 'PAGE' },
+  });
+  const lookup = vi.spyOn(figmaCtx, 'getNodeByIdAsync');
+  const writes = realWrites(figmaCtx);
+  const rename = vi.fn<SandboxToolHandler>(writes.rename_node!);
+  const annotate = vi.fn<SandboxToolHandler>(writes.set_annotations!);
+  const handler = createBatchHandler(figmaCtx, {
+    ...writes,
+    rename_node: rename,
+    set_annotations: annotate,
+  });
+  const items = Array.isArray(invalid)
+    ? invalid.length === 0
+      ? []
+      : [{ nodeId: '1:1', annotations: [{ label: 'after' }] }, ...invalid]
+    : invalid;
+  await expect(
+    handler({
+      ops: [
+        { tool: 'rename_node', params: { nodeId: '1:1', name: 'After' } },
+        { tool: 'set_annotations', params: { mode: 'replace', items } },
+      ],
+    }),
+  ).rejects.toThrow(message);
+  expect(rename).not.toHaveBeenCalled();
+  expect(annotate).not.toHaveBeenCalled();
+  expect(write).not.toHaveBeenCalled();
+  expect(node.name).toBe('Before');
+  expect(lookup).not.toHaveBeenCalledWith(undefined);
+});
+
+it.each(['append', 'replace'])(
+  'restores complete annotations on every node after %s rolls back',
+  async mode => {
+    const before = [
+      { labelMarkdown: '**before**', categoryId: 'known', properties: [{ type: 'fills' }] },
+    ];
+    const { figmaCtx, store } = makeFigma({
+      '1:1': { id: '1:1', annotations: before, opacity: 1 },
+      '1:2': { id: '1:2', annotations: [] },
+    });
+    const handler = createBatchHandler(figmaCtx, {
+      ...realWrites(figmaCtx),
+      set_opacity: async () => {
+        throw new Error('deliberate failure');
+      },
+    });
+    const error = await Promise.resolve(
+      handler({
+        ops: [
+          {
+            tool: 'set_annotations',
+            params: {
+              mode,
+              items: [
+                { nodeId: '1:1', annotations: [{ label: 'after' }] },
+                { nodeId: '1:2', annotations: [{ label: 'new' }] },
+              ],
+            },
+          },
+          { tool: 'set_opacity', params: { nodeId: '1:1', opacity: 0.5 } },
+        ],
+      }),
+    ).catch((e: Error) => e);
+    expect({
+      error,
+      first: store.get('1:1')?.annotations,
+      second: store.get('1:2')?.annotations,
+    }).toEqual({
+      error: expect.objectContaining({ message: expect.stringMatching(/rolled back 1/) }),
+      first: before,
+      second: [],
+    });
+  },
+);
 
 describe('batch deadlines', () => {
   it.each([1, 12, 48])(

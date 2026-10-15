@@ -1,3 +1,4 @@
+import { CLIENT_MESSAGE_LIMIT_BYTES, TOOL_RESULT_LIMIT_BYTES } from '@figwright/shared';
 import { describe, expect, it } from 'vitest';
 
 import { BATCH_TOOL_NAME, batchTool } from '../../src/tools/batch.js';
@@ -15,6 +16,7 @@ import { MOVE_NODES_TOOL_NAME, moveNodesTool } from '../../src/tools/move-nodes.
 import { RENAME_NODE_TOOL_NAME, renameNodeTool } from '../../src/tools/rename-node.js';
 import { RESIZE_NODES_TOOL_NAME, resizeNodesTool } from '../../src/tools/resize-nodes.js';
 import { ROTATE_NODES_TOOL_NAME, rotateNodesTool } from '../../src/tools/rotate-nodes.js';
+import { setAnnotationsTool } from '../../src/tools/set-annotations.js';
 import { SET_AUTO_LAYOUT_TOOL_NAME, setAutoLayoutTool } from '../../src/tools/set-auto-layout.js';
 import { SET_BLEND_MODE_TOOL_NAME, setBlendModeTool } from '../../src/tools/set-blend-mode.js';
 import { SET_CONSTRAINTS_TOOL_NAME, setConstraintsTool } from '../../src/tools/set-constraints.js';
@@ -66,6 +68,42 @@ const setVisibleToolDefinition = toToolDefinition(setVisibleTool);
 const unlockNodesToolDefinition = toToolDefinition(unlockNodesTool);
 
 describe('M2 write tool definitions', () => {
+  it('set_annotations requires items and an explicit append or replace mode', () => {
+    expect(toToolDefinition(setAnnotationsTool).inputSchema).toMatchObject({
+      required: ['items', 'mode'],
+      properties: { items: { type: 'array', minItems: 1 }, mode: { enum: ['append', 'replace'] } },
+    });
+  });
+
+  it('fits the documented maximum for 200-byte labels and sequential ids within request and result budgets', () => {
+    const items = Array.from({ length: 41_987 }, (_, i) => ({
+      nodeId: `1:${i}`,
+      annotations: [{ label: 'x'.repeat(200) }],
+    }));
+    const requestBytes = (entries: typeof items) =>
+      Buffer.byteLength(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: { name: 'set_annotations', arguments: { mode: 'replace', items: entries } },
+        }),
+      );
+    const result = {
+      ok: true,
+      results: items.slice(0, -1).map(item => ({ nodeId: item.nodeId, count: 1 })),
+    };
+    expect({
+      fits: requestBytes(items.slice(0, -1)) < CLIENT_MESSAGE_LIMIT_BYTES,
+      nextFits: requestBytes(items) < CLIENT_MESSAGE_LIMIT_BYTES,
+      resultFits:
+        Buffer.byteLength(JSON.stringify(JSON.stringify(result))) - 2 < TOOL_RESULT_LIMIT_BYTES,
+      accepted: setAnnotationsTool.inputSchema.safeParse({
+        mode: 'replace',
+        items: items.slice(0, -1),
+      }).success,
+    }).toEqual({ fits: true, nextFits: false, resultFits: true, accepted: true });
+  });
   it('set_fills requires nodeId + fills', () => {
     expect(setFillsToolDefinition.name).toBe(SET_FILLS_TOOL_NAME);
     expect(setFillsToolDefinition.inputSchema).toMatchObject({

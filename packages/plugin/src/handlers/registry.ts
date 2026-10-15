@@ -84,6 +84,7 @@ import { createSaveVersionHandler } from './save-version.js';
 import { createScanNodesByTypesHandler } from './scan-nodes-by-types.js';
 import { createScanTextNodesHandler } from './scan-text-nodes.js';
 import { createSearchNodesHandler } from './search-nodes.js';
+import { createSetAnnotationsHandler } from './set-annotations.js';
 import { createSetArcHandler } from './set-arc.js';
 import { createSetAutoLayoutHandler } from './set-auto-layout.js';
 import { createSetBlendModeHandler } from './set-blend-mode.js';
@@ -136,6 +137,7 @@ const buildHandlers = (
     create_frame: createCreateFrameHandler(figmaCtx),
     set_opacity: createSetOpacityHandler(figmaCtx),
     set_visible: createSetVisibleHandler(figmaCtx),
+    set_annotations: createSetAnnotationsHandler(figmaCtx),
     rename_node: createRenameNodeHandler(figmaCtx),
     delete_nodes: createDeleteNodesHandler(figmaCtx),
     create_text: createCreateTextHandler(figmaCtx),
