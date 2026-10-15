@@ -1701,6 +1701,32 @@ const variableModeInverse: BatchInverse = {
 };
 
 const INVERSES: Readonly<Record<string, BatchInverse>> = {
+  set_annotations: {
+    async capture(figmaCtx, params) {
+      const { items } = params as { items: { nodeId: string }[] };
+      return Promise.all(
+        items.map(async ({ nodeId }) => {
+          const node = await figmaCtx.getNodeByIdAsync(nodeId);
+          if (node === null || !('annotations' in node))
+            throw new Error(`set_annotations: node ${nodeId} does not support annotations`);
+          return { id: nodeId, annotations: node.annotations };
+        }),
+      );
+    },
+    async undo(figmaCtx, _params, captured) {
+      const snapshots = captured as {
+        id: string;
+        annotations: readonly Annotation[];
+      }[];
+      const nodes = await Promise.all(snapshots.map(({ id }) => live(figmaCtx, id)));
+      nodes.forEach((node, index) => {
+        if (node !== null && 'annotations' in node)
+          node.annotations = snapshots[index]!.annotations;
+      });
+      return undefined;
+    },
+    touches: (_params, captured) => snapshotIds(captured),
+  },
   // Single-node properties. Snapshot every field the handler can write, not just the headline one,
   // plus the bindings a write drops. Order matters where a uniform value precedes per-side/corner
   // values it would otherwise overwrite (mirrors the handlers).

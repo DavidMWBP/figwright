@@ -133,6 +133,18 @@
     ],
     "create_frame": ["height", "name", "parentId", "requestId", "width", "x", "y"],
     "set_opacity": ["nodeId", "opacity", "requestId"],
+    "set_annotations": [
+      "items",
+      "items[].annotations",
+      "items[].annotations[].categoryId",
+      "items[].annotations[].label",
+      "items[].annotations[].labelMarkdown",
+      "items[].annotations[].properties",
+      "items[].annotations[].properties[].type",
+      "items[].nodeId",
+      "mode",
+      "requestId"
+    ],
     "set_visible": ["nodeId", "requestId", "visible"],
     "rename_node": ["name", "nodeId", "requestId"],
     "delete_nodes": ["nodeIds", "requestId"],
