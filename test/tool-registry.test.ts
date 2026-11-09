@@ -4,7 +4,10 @@ import { ALL_TOOL_SPECS, WRITE_TOOL_NAMES } from '../packages/mcp/src/tools/regi
 import { WIRE_TOOL_SCHEMAS } from '../packages/mcp/src/tools/wire-schema.js';
 import { toToolDefinition } from '../packages/mcp/test/tool-schema.js';
 import { BATCHABLE_TOOLS, NON_BATCHABLE } from '../packages/plugin/src/handlers/batch.js';
-import { createSandboxHandlers } from '../packages/plugin/src/handlers/registry.js';
+import {
+  createSandboxHandlers,
+  SANDBOX_WRITE_TOOLS,
+} from '../packages/plugin/src/handlers/registry.js';
 
 // Cross-package guard: a tool is wired across ~6 places (server def + ListTools + WRITE set, plugin
 // handler + idempotent wrap + batch inverse). Forgetting one fails silently at runtime. These tests
@@ -82,6 +85,11 @@ describe('tool registry', () => {
     const writes = [...WRITE_TOOL_NAMES];
     expect(writes.filter(n => !serverNames.includes(n))).toEqual([]);
     expect(writes.filter(n => !handlerKeys.includes(n))).toEqual([]);
+  });
+
+  it('the sandbox queues exactly the server write tools', () => {
+    // The sandbox runs these one at a time; a write missing here would run beside a batch rollback.
+    expect([...SANDBOX_WRITE_TOOLS].toSorted()).toEqual([...WRITE_TOOL_NAMES].toSorted());
   });
 
   it('every delete_* tool declares destructive, and destructive only appears on writes', () => {

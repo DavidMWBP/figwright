@@ -11,6 +11,7 @@ import {
   type PluginToolResult,
 } from '../protocol/bridge.js';
 import { withEditorContext } from '../protocol/editor-context.js';
+import { SANDBOX_WRITE_TOOLS } from './handlers/registry.js';
 
 export type SandboxToolHandler = (
   params: unknown,
@@ -35,6 +36,17 @@ export type DispatchOutcome =
   | { kind: 'reply'; reply: PluginToolResult | PluginToolError }
   | { kind: 'ignore' };
 
+// One FIFO queue for every write in this sandbox. A batch captures old values, applies, and may roll
+// back; letting another write run in between would let that rollback restore values over it. Each
+// write starts once the previous one settled, resolved or rejected. Reads never wait here.
+let writeTail: Promise<unknown> = Promise.resolve();
+
+const enqueueWrite = (run: () => unknown): Promise<unknown> => {
+  const result = writeTail.then(run);
+  writeTail = result.catch(() => {});
+  return result;
+};
+
 export const dispatchSandboxMessage = async (input: DispatchInput): Promise<DispatchOutcome> => {
   if (!isPluginBridgeMessage(input.raw)) return { kind: 'ignore' };
   if (input.raw.kind !== 'tool-call') return { kind: 'ignore' };
@@ -56,10 +68,12 @@ export const dispatchSandboxMessage = async (input: DispatchInput): Promise<Disp
   }
 
   try {
-    const result = await handler(params, {
-      progress: state =>
-        input.progress?.({ tag: PLUGIN_BRIDGE_TAG, kind: 'tool-progress', id, ...state }),
-    });
+    const run = (): unknown =>
+      handler(params, {
+        progress: state =>
+          input.progress?.({ tag: PLUGIN_BRIDGE_TAG, kind: 'tool-progress', id, ...state }),
+      });
+    const result = await (SANDBOX_WRITE_TOOLS.has(method) ? enqueueWrite(run) : run());
     return { kind: 'reply', reply: createToolResult({ id, result }) };
   } catch (err) {
     const raised = err instanceof Error ? err.message : String(err);
