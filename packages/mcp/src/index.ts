@@ -110,7 +110,7 @@ await election.start();
 
 type ToolHandler = (args: Record<string, unknown>) => Promise<CallToolResult>;
 
-const dispatchCtx = { node, follower, log };
+const dispatchCtx = { node, follower, log, buildId: BUILD_ID };
 
 // Every tool call honours this process's claimed file (routing/target.ts). Unclaimed — the default,
 // and the only state a single-agent user is ever in — it is `dispatchTool` unchanged.
@@ -192,6 +192,7 @@ const SPECIAL_HANDLERS: Record<string, ToolHandler> = {
         dispatchToSession,
         view.reconnecting,
         view.leaderUnreachable,
+        view.leaderBuildId,
       ),
     );
   },

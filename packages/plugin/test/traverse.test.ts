@@ -147,7 +147,12 @@ describe('collectMatches / flattenForest — robustness', () => {
       },
     });
     await expect(collectMatches([root], () => true)).rejects.toBe(failure);
-    await expect(flattenForest([root])).rejects.toBe(failure);
+    await expect(flattenForest([root])).rejects.toMatchObject({
+      cause: failure,
+      nodeId: 'root',
+      stage: 'children',
+      message: expect.stringContaining('serializeNode(root) failed: native children unavailable'),
+    });
   });
 });
 

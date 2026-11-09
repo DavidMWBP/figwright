@@ -82,7 +82,7 @@ describe('handleListFiles', () => {
   });
 
   it('is two empty lists when no plugin is connected or reconnecting', async () => {
-    expect(await handleListFiles([], replying({}), [])).toEqual({
+    expect(await handleListFiles([], replying({}), [], undefined, 0)).toEqual({
       serverBuild: '0 (unbundled)',
       files: [],
       reconnecting: [],
@@ -111,7 +111,7 @@ describe('handleListFiles', () => {
   it('says the leader is unreachable, and why, instead of only listing nothing', async () => {
     const reason = '/ping to http://127.0.0.1:3055 failed: fetch failed';
     expect(await handleListFiles([], replying({}), [], reason)).toEqual({
-      serverBuild: '0 (unbundled)',
+      serverBuild: 'unknown',
       files: [],
       reconnecting: [],
       leaderUnreachable: reason,
