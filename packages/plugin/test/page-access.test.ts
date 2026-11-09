@@ -1,12 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createBatchHandler } from '../src/handlers/batch.js';
 import { createDeletePageHandler } from '../src/handlers/delete-page.js';
 import { createNavigateToPageHandler } from '../src/handlers/navigate-to-page.js';
 import { createRenamePageHandler } from '../src/handlers/rename-page.js';
 import { createUpdateFlowsHandler } from '../src/handlers/update-flows.js';
+import { withInstanceIdLookup } from '../src/node-lookup.js';
 import { resolveScope } from '../src/traverse.js';
 import { unloadedPage } from './page-fake.js';
+import { CONNECTION_ERROR } from './read-retry-fake.js';
 
 const handlers = [
   ['navigate_to_page', createNavigateToPageHandler],
@@ -74,6 +76,70 @@ it('loads the current page when explicitly used as a scope without switching it'
   expect(await resolveScope(f.figmaCtx, f.page.id)).toBe(f.children);
   expect(f.loadAsync).toHaveBeenCalledOnce();
   expect(f.figmaCtx.setCurrentPageAsync).not.toHaveBeenCalled();
+});
+
+it.each([true, false])(
+  'diagnoses a non-current page timeout with one probe (healthy=%s)',
+  async healthy => {
+    vi.useFakeTimers();
+    try {
+      const f = unloadedPage();
+      const cause = new Error(CONNECTION_ERROR);
+      f.loadAsync.mockRejectedValue(cause);
+      if (!healthy) f.getNodeByIdAsync.mockRejectedValue(new Error(CONNECTION_ERROR));
+      const ctx = withInstanceIdLookup(f.figmaCtx);
+      const running = Promise.all([
+        resolveScope(ctx, f.page.id).catch(error => error),
+        resolveScope(ctx, f.page.id).catch(error => error),
+      ]);
+      await vi.runAllTimersAsync();
+      for (const error of await running) {
+        expect(error.message).toContain(`PageNode.loadAsync(P:2) failed: ${CONNECTION_ERROR}`);
+        expect(error.message).toContain('Read failed twice.');
+        expect(error.message).toContain('page "Before" (P:2)');
+        expect(error.cause).toMatchObject({ cause });
+        expect(error.message).toMatch(
+          healthy
+            ? /current page still answers.*Open.*page.*Figma.*retry/
+            : /session is not answering reads.*Reload the plugin/,
+        );
+        expect(error.message.includes('Reload the plugin')).toBe(!healthy);
+      }
+      expect(f.getNodeByIdAsync).toHaveBeenCalledExactlyOnceWith('P:1');
+      expect(f.figmaCtx.setCurrentPageAsync).not.toHaveBeenCalled();
+      expect(f.figmaCtx.currentPage.id).toBe('P:1');
+    } finally {
+      vi.useRealTimers();
+    }
+  },
+);
+
+it('shares the three-retry allowance between page loads and node lookups', async () => {
+  vi.useFakeTimers();
+  try {
+    const f = unloadedPage();
+    f.loadAsync.mockRejectedValue(CONNECTION_ERROR);
+    f.getNodeByIdAsync.mockImplementation(async id => {
+      if (id === 'P:1') return null;
+      throw new Error(CONNECTION_ERROR);
+    });
+    const ctx = withInstanceIdLookup(f.figmaCtx);
+    const running = (async () => {
+      await ctx.getNodeByIdAsync('8:1').catch(error => error);
+      await resolveScope(ctx, f.page.id).catch(error => error);
+      await ctx.getNodeByIdAsync('8:2').catch(error => error);
+      return resolveScope(ctx, f.page.id).catch(error => error);
+    })();
+    await vi.runAllTimersAsync();
+    const error = await running;
+    expect(error.message).toContain('Retry cap reached (3 per tool call).');
+    expect(error.message).toContain('current page still answers');
+    expect(f.loadAsync).toHaveBeenCalledTimes(3);
+    expect(f.getNodeByIdAsync.mock.calls).toEqual([['8:1'], ['8:1'], ['P:1'], ['8:2'], ['8:2']]);
+    expect(f.figmaCtx.setCurrentPageAsync).not.toHaveBeenCalled();
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it.each([new Error('unavailable'), 'unavailable'])(

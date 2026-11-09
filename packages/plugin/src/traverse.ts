@@ -1,5 +1,6 @@
 import { TimeSlice } from './cooperative.js';
-import { loadPage } from './page-lookup.js';
+import { probeLoadedPage } from './node-lookup.js';
+import { isPageLoadConnectionTimeout, loadPage } from './page-lookup.js';
 
 const isSceneNode = (node: BaseNode): node is SceneNode =>
   node.type !== 'DOCUMENT' && node.type !== 'PAGE';
@@ -104,7 +105,19 @@ export const resolveScope = async (
   if (typeof root !== 'string') {
     throw new TypeError('root must be a string node id');
   }
-  const page = await loadPage(figmaCtx, root);
+  let page: PageNode | null;
+  try {
+    page = await loadPage(figmaCtx, root);
+  } catch (error) {
+    if (!isPageLoadConnectionTimeout(error) || root === figmaCtx.currentPage.id) throw error;
+    const target = figmaCtx.root.children.find(candidate => candidate.id === root);
+    if (target === undefined) throw error;
+    const advice = (await probeLoadedPage(figmaCtx))
+      ? 'The current page still answers. Open that page in Figma, then retry the read.'
+      : 'The session is not answering reads: the loaded-page health probe failed too. Reload the plugin to restore reads.';
+    error.message += ` Loading page "${target.name}" (${root}) failed. ${advice}`;
+    throw error;
+  }
   if (page !== null) return page.children;
   const node = await figmaCtx.getNodeByIdAsync(root);
   if (node === null) return [];
