@@ -80,7 +80,7 @@ The plugin isn't on the Figma Community marketplace yet, so install it from the 
 
 ### 3. Connect
 
-Open the Figwright plugin in Figma (**Plugins → Development → Figwright**). It connects to the local server automatically and shows **Connected**. Ask your agent to run `ping` to confirm the link.
+Open the Figwright plugin in Figma (**Plugins → Development → Figwright**). It connects to the local server automatically and shows **Connected**. Ask your agent to run `ping` to confirm the link; it also names the server and plugin builds.
 
 After the plugin runs in a Figma Design file, **Run Figwright** appears in the right-hand properties panel with nothing selected, on every page. Click it to start the plugin again, just like the menu. Each start saves the same button, so running it again adds no duplicate or other change. Registration is skipped in FigJam and Dev Mode; if file permissions reject saving the button, startup still works and you can use the plugins menu.
 
@@ -282,7 +282,7 @@ The fix is to install the package so launch needs no registry fetch:
 
 The server is launched by your MCP client, so it only runs while that client is open. Check that:
 
-- your MCP client is running and has Figwright configured (try a `ping`);
+- your MCP client is running and has Figwright configured (try a `ping`, which reports the server build and, when a plugin is connected, the plugin's build too);
 - the plugin is open in the **same** Figma app on the same machine (the relay is local-only, `127.0.0.1`);
 - nothing is blocking local loopback connections (some firewall / security tools do).
 
@@ -333,7 +333,7 @@ Yes, once each agent claims its file.
 
 By default calls follow whichever file you last touched, so switching tabs switches what the agent sees — the right behaviour for one agent, and the wrong one for two, since the agent whose file isn't in front would silently get the other file's nodes. Whenever more than one file is open and an agent hasn't claimed one, every result it gets says so, so it can claim one before building anything on the wrong file.
 
-`list_files` shows every file that currently has the plugin open, and `use_file` claims one for that agent:
+`list_files` shows every file that currently has the plugin open, plus any plugin whose connection dropped in the last 30 seconds and may resume (with the drop reason). If the server cannot read the plugin sessions from its leader, it returns empty lists with `leaderUnreachable` explaining why; those empty lists do not mean no plugin is connected. `use_file` claims one for that agent:
 
 ```text
 > use the marketing site file

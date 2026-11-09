@@ -39,7 +39,7 @@ Failed Figma boundaries say `<call>(<target>) failed: <original message>`. The e
 file and target before retrying. `Unable to establish connection` alone does not prove a lost
 session: follow the node lookup's health advice. A `ping` fallback with `hop: "server-only"`
 and `dispatchError` does not prove the routed file answered. Error codes, including
-`INTERNAL_ERROR`, and the version-skew notice retain their own meaning.
+`INTERNAL_ERROR`, and the version-skew notice retain their own meaning. A write that fails with `outcome unknown, read back before retrying` lost its reply in transport and may already have applied: read its target back before you send it again.
 
 ## First, understand the environment, then build (provider-first)
 
