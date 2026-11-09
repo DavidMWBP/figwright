@@ -333,7 +333,7 @@ Yes, once each agent claims its file.
 
 By default calls follow whichever file you last touched, so switching tabs switches what the agent sees — the right behaviour for one agent, and the wrong one for two, since the agent whose file isn't in front would silently get the other file's nodes. Whenever more than one file is open and an agent hasn't claimed one, every result it gets says so, so it can claim one before building anything on the wrong file.
 
-`list_files` shows every file that currently has the plugin open, plus any plugin whose connection dropped in the last 30 seconds and may resume (with the drop reason). If the server cannot read the plugin sessions from its leader, it says so instead of showing an empty list. `use_file` claims one for that agent:
+`list_files` shows every file that currently has the plugin open, plus any plugin whose connection dropped in the last 30 seconds and may resume (with the drop reason). If the server cannot read the plugin sessions from its leader, it returns empty lists with `leaderUnreachable` explaining why; those empty lists do not mean no plugin is connected. `use_file` claims one for that agent:
 
 ```text
 > use the marketing site file
