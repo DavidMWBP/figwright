@@ -145,6 +145,27 @@ it.each([
   }
 });
 
+it('stops batch navigation at a page-load timeout during capture before the handler applies', async () => {
+  vi.useFakeTimers();
+  try {
+    const f = unloadedPage();
+    f.loadAsync.mockRejectedValue(CONNECTION_ERROR);
+    const running = Promise.resolve(
+      createSandboxHandlers(f.figmaCtx).batch!({
+        ops: [{ tool: 'navigate_to_page', params: { pageId: f.page.id } }],
+      }),
+    ).catch(error => error);
+    await vi.runAllTimersAsync();
+    const error = (await running) as Error;
+    expect(error.message).toContain('capture failed before any op was applied');
+    expect(error.message).toContain(`PageNode.loadAsync(P:2) failed: ${CONNECTION_ERROR}`);
+    expect(f.loadAsync).toHaveBeenCalledTimes(2);
+    expect(f.figmaCtx.setCurrentPageAsync).not.toHaveBeenCalled();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it('captures and renames an unloaded page', async () => {
   const f = unloadedPage();
   let name = 'Before';

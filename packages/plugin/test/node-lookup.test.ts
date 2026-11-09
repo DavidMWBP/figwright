@@ -3,7 +3,9 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createSandboxHandlers } from '../src/handlers/registry.js';
 import { withInstanceIdLookup } from '../src/node-lookup.js';
+import { resolveScope } from '../src/traverse.js';
 import { unloadedPage } from './page-fake.js';
+import { CONNECTION_ERROR } from './read-retry-fake.js';
 
 it('wraps variable lookup on a frozen host API', async () => {
   const variable = { id: 'V:2' } as Variable;
@@ -153,6 +155,36 @@ describe('a healthy by-id lookup is used as is', () => {
 });
 
 describe('lookup rejection context', () => {
+  it('shares page and node probes within an invocation and refreshes the next invocation', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = unloadedPage();
+      f.loadAsync.mockRejectedValue(CONNECTION_ERROR);
+      f.getNodeByIdAsync.mockImplementation(async id => {
+        if (id === 'P:1') return null;
+        throw new Error('target failed');
+      });
+      const running = (async () => {
+        const errors = [];
+        for (let invocation = 0; invocation < 2; invocation += 1) {
+          const ctx = withInstanceIdLookup(f.figmaCtx);
+          const pageError = await resolveScope(ctx, f.page.id).catch(error => error);
+          const nodeError = await ctx.getNodeByIdAsync('8:8').catch(error => error);
+          errors.push({ pageError, nodeError });
+        }
+        return errors;
+      })();
+      await vi.runAllTimersAsync();
+      for (const { pageError, nodeError } of await running) {
+        expect(pageError.message).toContain('current page still answers');
+        expect(nodeError.message).toContain('session answered other reads');
+      }
+      expect(f.getNodeByIdAsync.mock.calls).toEqual([['P:1'], ['8:8'], ['P:1'], ['8:8']]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('probes only after the target retry is exhausted, without retrying a failed probe', async () => {
     vi.useFakeTimers();
     try {

@@ -169,9 +169,11 @@ describe('resolveScope', () => {
       f.loadAsync.mockRejectedValue(CONNECTION_ERROR);
       const reading = resolveScope(f.figmaCtx, f.page.id).catch(error => error);
       await vi.runAllTimersAsync();
-      expect((await reading).message).toBe(
+      expect((await reading).message).toContain(
         `PageNode.loadAsync(P:2) failed: ${CONNECTION_ERROR} Read failed twice.`,
       );
+      expect((await reading).message).toContain('current page still answers');
+      expect(f.getNodeByIdAsync).toHaveBeenCalledExactlyOnceWith('P:1');
       expect(f.loadAsync).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();

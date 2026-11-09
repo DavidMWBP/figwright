@@ -4,6 +4,34 @@ import { attachReadRetry, retryRead, type ReadRetryState } from './read-retry.js
 /** `I<outermost instance id>;…` — the first segment is a plain id Figma can look up. */
 const INSTANCE_QUALIFIED = /^I([^;]+);/;
 
+const healthProbes = new WeakMap<typeof figma, () => Promise<boolean>>();
+
+const createHealthProbe = (figmaCtx: typeof figma): (() => Promise<boolean>) => {
+  let health: Promise<boolean> | undefined;
+  return () => {
+    health ??= (async () => {
+      try {
+        const page = figmaCtx.currentPage;
+        await figmaCtx.getNodeByIdAsync(page.id);
+        return true;
+      } catch {
+        return false;
+      }
+    })();
+    return health;
+  };
+};
+
+/** Share one raw loaded-page read with node lookups in this invocation, without retrying it. */
+export const probeLoadedPage = (figmaCtx: typeof figma): Promise<boolean> => {
+  let probe = healthProbes.get(figmaCtx);
+  if (probe === undefined) {
+    probe = createHealthProbe(figmaCtx);
+    healthProbes.set(figmaCtx, probe);
+  }
+  return probe();
+};
+
 /** Attribute Figma's connection-like rejection to the lookup that actually failed. */
 const lookup = async (
   figmaCtx: typeof figma,
@@ -68,19 +96,7 @@ export const withInstanceIdLookup = (
 ): typeof figma => {
   // The registry creates this proxy per tool invocation. Cache the promise before awaiting it so
   // concurrent failed ids share one raw read, without spending or repeating the retry allowance.
-  let health: Promise<boolean> | undefined;
-  const probe = (): Promise<boolean> => {
-    health ??= (async () => {
-      try {
-        const page = figmaCtx.currentPage;
-        await figmaCtx.getNodeByIdAsync(page.id);
-        return true;
-      } catch {
-        return false;
-      }
-    })();
-    return health;
-  };
+  const probe = createHealthProbe(figmaCtx);
   const getNodeByIdAsync = async (id: string): Promise<BaseNode | null> => {
     const root = INSTANCE_QUALIFIED.exec(id)?.[1];
     if (root === undefined) return lookup(figmaCtx, id, proxy, probe);
@@ -131,5 +147,6 @@ export const withInstanceIdLookup = (
           has: (_, prop) => Reflect.has(figmaCtx.variables, prop),
         });
   attachReadRetry(proxy, retryState);
+  healthProbes.set(proxy, probe);
   return proxy;
 };
