@@ -7,8 +7,23 @@ import {
 } from '@figwright/shared';
 import { decode, encode } from '@msgpack/msgpack';
 
-import type { PluginSessionInfo } from '../routing/sessions.js';
+import type { DisconnectReason } from '../relay/session.js';
+import type { PluginSessionInfo, ReconnectingSessionInfo } from '../routing/sessions.js';
 import { ABDICATE_PATH, PING_PATH, RPC_PATH } from './leader-endpoints.js';
+
+/** What the leader holds: sessions calls can reach, and those inside their grace window. */
+export interface SessionView {
+  connected: readonly PluginSessionInfo[];
+  reconnecting: readonly ReconnectingSessionInfo[];
+}
+
+const CLOSED_BY: ReadonlySet<DisconnectReason['closedBy']> = new Set(['server', 'plugin', 'lost']);
+
+/** The object entries of a JSON array field another process sent; anything else is skipped. */
+const records = (raw: unknown): Record<string, unknown>[] =>
+  Array.isArray(raw)
+    ? raw.filter((e): e is Record<string, unknown> => typeof e === 'object' && e !== null)
+    : [];
 
 /**
  * Release the body of a response we are returning without reading. `fetch` delivers the body as a
@@ -195,15 +210,19 @@ export class Follower {
    * same place, an agent told nothing is available to bind, which is true either way.
    */
   async listSessions(): Promise<readonly PluginSessionInfo[]> {
+    return (await this.listSessionView()).connected;
+  }
+
+  /**
+   * The connected sessions plus those inside their disconnect grace window, from one `/ping` so the
+   * two lists describe the same moment. A leader that predates `reconnecting` yields an empty one.
+   */
+  async listSessionView(): Promise<SessionView> {
     const body = await this.fetchPing();
-    const raw = body?.sessions;
-    if (!Array.isArray(raw)) return [];
-    const out: PluginSessionInfo[] = [];
-    for (const entry of raw as readonly unknown[]) {
-      if (typeof entry !== 'object' || entry === null) continue;
-      const s = entry as Record<string, unknown>;
+    const connected: PluginSessionInfo[] = [];
+    for (const s of records(body?.sessions)) {
       if (typeof s.id !== 'string') continue;
-      out.push({
+      connected.push({
         id: s.id,
         fileName: typeof s.fileName === 'string' ? s.fileName : null,
         pageName: typeof s.pageName === 'string' ? s.pageName : null,
@@ -211,7 +230,31 @@ export class Follower {
         pluginVersion: typeof s.pluginVersion === 'string' ? s.pluginVersion : 'unknown',
       });
     }
-    return out;
+    const reconnecting: ReconnectingSessionInfo[] = [];
+    for (const s of records(body?.reconnecting)) {
+      const reason = s.reason as Record<string, unknown> | null | undefined;
+      if (
+        typeof s.id !== 'string' ||
+        typeof s.disconnectedAt !== 'number' ||
+        typeof reason?.code !== 'number' ||
+        !CLOSED_BY.has(reason.closedBy as DisconnectReason['closedBy'])
+      ) {
+        continue;
+      }
+      reconnecting.push({
+        id: s.id,
+        fileName: typeof s.fileName === 'string' ? s.fileName : null,
+        pageName: typeof s.pageName === 'string' ? s.pageName : null,
+        pluginVersion: typeof s.pluginVersion === 'string' ? s.pluginVersion : 'unknown',
+        disconnectedAt: s.disconnectedAt,
+        reason: {
+          code: reason.code,
+          closedBy: reason.closedBy as DisconnectReason['closedBy'],
+          detail: typeof reason.detail === 'string' ? reason.detail : null,
+        },
+      });
+    }
+    return { connected, reconnecting };
   }
 
   async sendRpc(

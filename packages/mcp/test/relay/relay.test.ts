@@ -1,3 +1,4 @@
+import type { EventEmitter } from 'node:events';
 import { createServer, type Server as HttpServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
@@ -18,10 +19,11 @@ import {
   type ResponseEnvelope,
   SystemMethod,
 } from '@figwright/shared';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket } from 'ws';
 
 import { Relay } from '../../src/relay/relay.js';
+import { fakeRelay } from '../relay-fake.js';
 
 interface Bound {
   relay: Relay;
@@ -1246,5 +1248,120 @@ describe('Relay session pinning', () => {
       relay.sendRequest('get_design_context', {}, 5_000, 'ghost-session'),
     ).rejects.toThrow(/pinned session not connected/);
     wsA.close();
+  });
+});
+
+// A dropped socket keeps its session for the grace window, so `list_files` can say the file is
+// coming back rather than that it is gone. Only the reconnecting list carries it — routing reads
+// the connected one, which a session leaves the moment its socket drops.
+describe('Relay reconnecting sessions', () => {
+  const T0 = Date.UTC(2026, 10, 9, 12);
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(T0);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** A fake socket whose close() reports back the way ws does: a 'close' event with the code. */
+  const closesLikeWs = (socket: WebSocket): void => {
+    const emitter = socket as unknown as EventEmitter;
+    Object.assign(socket, {
+      close: (code: number, reason = '') => emitter.emit('close', code, Buffer.from(reason)),
+    });
+  };
+
+  it.each([
+    [
+      "the plugin's own heartbeat (4000)",
+      (socket: WebSocket) =>
+        (socket as unknown as EventEmitter).emit('close', 4000, Buffer.from('heartbeat timeout')),
+      T0,
+      { code: 4000, closedBy: 'plugin', detail: 'heartbeat timeout' },
+    ],
+    [
+      "the relay's heartbeat timeout (1001, closed by the server)",
+      // Two missed 15s intervals; the relay closes the socket on the second tick.
+      () => vi.advanceTimersByTime(30_000),
+      T0 + 30_000,
+      { code: 1001, closedBy: 'server', detail: 'heartbeat timeout' },
+    ],
+    [
+      'a socket lost without a close frame (1006)',
+      (socket: WebSocket) =>
+        (socket as unknown as EventEmitter).emit('close', 1006, Buffer.alloc(0)),
+      T0,
+      { code: 1006, closedBy: 'lost', detail: null },
+    ],
+  ])(
+    'lists a session dropped by %s as reconnecting, with the reason',
+    async (_, drop, at, reason) => {
+      const { relay, connect: plug } = fakeRelay();
+      const plugin = plug('s-1', 'Brand', 'Cover');
+      closesLikeWs(plugin.socket);
+
+      drop(plugin.socket);
+      vi.advanceTimersByTime(4_000);
+
+      expect(relay.listSessionInfo()).toEqual([]);
+      expect(relay.listReconnectingInfo()).toEqual([
+        {
+          id: 's-1',
+          fileName: 'Brand',
+          pageName: 'Cover',
+          pluginVersion: '1.0.0',
+          disconnectedAt: at,
+          reason,
+        },
+      ]);
+      await relay.stop();
+    },
+  );
+
+  it('lists a session that came back within the grace window once, as connected', async () => {
+    const { relay, connect: plug } = fakeRelay();
+    const first = plug('s-1', 'Brand');
+    (first.socket as unknown as EventEmitter).emit('close', 4000, Buffer.from('heartbeat timeout'));
+    vi.advanceTimersByTime(10_000);
+
+    plug('s-1', 'Brand');
+
+    expect(relay.listSessionInfo().map(s => s.id)).toEqual(['s-1']);
+    expect(relay.listReconnectingInfo()).toEqual([]);
+    await relay.stop();
+  });
+
+  it('stops listing a reconnecting session when the grace window runs out', async () => {
+    const { relay, connect: plug } = fakeRelay();
+    const plugin = plug('s-1', 'Brand');
+    (plugin.socket as unknown as EventEmitter).emit(
+      'close',
+      4000,
+      Buffer.from('heartbeat timeout'),
+    );
+
+    vi.advanceTimersByTime(29_999);
+    expect(relay.listReconnectingInfo().map(s => s.id)).toEqual(['s-1']);
+    vi.advanceTimersByTime(1);
+    expect(relay.listReconnectingInfo()).toEqual([]);
+    expect(relay.listSessionInfo()).toEqual([]);
+    await relay.stop();
+  });
+
+  it('does not list a session the plugin ended with 1000 as reconnecting', async () => {
+    const { relay, connect: plug } = fakeRelay();
+    const plugin = plug('s-1', 'Brand');
+
+    (plugin.socket as unknown as EventEmitter).emit(
+      'close',
+      1000,
+      Buffer.from('client disconnect'),
+    );
+
+    expect(relay.listReconnectingInfo()).toEqual([]);
+    expect(relay.listSessionInfo()).toEqual([]);
+    await relay.stop();
   });
 });

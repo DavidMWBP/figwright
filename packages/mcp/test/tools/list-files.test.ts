@@ -1,5 +1,5 @@
 import type { ListFilesResult } from '@figwright/shared';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { PluginSessionInfo } from '../../src/routing/sessions.js';
 import { clearFileTarget, setFileTarget } from '../../src/routing/target.js';
@@ -81,7 +81,47 @@ describe('handleListFiles', () => {
     expect(files[1]?.error).toMatch(/timeout/);
   });
 
-  it('is an empty list when no plugin is connected', async () => {
-    expect(await handleListFiles([], replying({}))).toEqual({ files: [] });
+  it('is two empty lists when no plugin is connected or reconnecting', async () => {
+    expect(await handleListFiles([], replying({}), [])).toEqual({ files: [], reconnecting: [] });
+  });
+
+  it('lists a dropped session apart from the connected one, with how long ago and why', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(Date.UTC(2026, 10, 9, 12, 0, 12));
+      const asked: string[] = [];
+      const dispatch: SessionDispatch = async (sessionId, ...rest) => {
+        asked.push(sessionId);
+        return replying({ 's-1': 'Brand' })(sessionId, ...rest);
+      };
+      const reason = { code: 1001, closedBy: 'server', detail: 'heartbeat timeout' } as const;
+
+      const result = await handleListFiles([session('s-1', 'Brand')], dispatch, [
+        {
+          id: 's-2',
+          fileName: 'Marketing',
+          pageName: 'Cover',
+          pluginVersion: '0.5.0',
+          disconnectedAt: Date.UTC(2026, 10, 9, 12, 0, 5),
+          reason,
+        },
+      ]);
+
+      // The dropped one is not a file calls can reach, so it is neither asked nor routed to.
+      expect(asked).toEqual(['s-1']);
+      expect(result.files.map(f => [f.sessionId, f.routed])).toEqual([['s-1', true]]);
+      expect(result.reconnecting).toEqual([
+        {
+          sessionId: 's-2',
+          fileName: 'Marketing',
+          pageName: 'Cover',
+          pluginVersion: '0.5.0',
+          droppedMsAgo: 7_000,
+          reason,
+        },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
