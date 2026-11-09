@@ -2,12 +2,13 @@ import { probeLoadedPage } from './node-lookup.js';
 
 /** A failed native read belongs to the node being read, which may be deep inside a requested tree. */
 export class NodeReadError extends Error {
+  readonly node: BaseNode;
   readonly nodeId: string;
   readonly stage: string;
 
-  constructor(node: BaseNode, stage: string, cause: unknown) {
+  constructor(node: BaseNode, stage: string, cause: unknown, fallbackId = 'unknown') {
     // Even the diagnostic fields are native getters. Their failure must not hide the first error.
-    let nodeId = 'unknown';
+    let nodeId = fallbackId;
     let name: string | undefined;
     try {
       nodeId = node.id;
@@ -29,8 +30,15 @@ export class NodeReadError extends Error {
       `${message} (node ${nodeId}${name === undefined ? '' : ` ${JSON.stringify(name)}`}, read stage: ${stage})`,
       { cause },
     );
+    this.node = node;
     this.nodeId = nodeId;
     this.stage = stage;
+  }
+
+  /** A requested root whose `id` getter failed is still named by the id the caller asked for. */
+  forRequest(root: BaseNode, requestedId: string): NodeReadError {
+    if (this.node !== root || this.nodeId !== 'unknown') return this;
+    return new NodeReadError(root, this.stage, this.cause, requestedId);
   }
 
   async advise(figmaCtx: typeof figma): Promise<this> {

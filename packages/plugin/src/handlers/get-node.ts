@@ -34,7 +34,9 @@ export const createGetNodeHandler =
       };
       return result;
     } catch (error) {
-      if (error instanceof NodeReadError) throw await error.advise(figmaCtx);
+      if (error instanceof NodeReadError && node !== null) {
+        throw await error.forRequest(node, nodeId).advise(figmaCtx);
+      }
       throw error;
     }
   };

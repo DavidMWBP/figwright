@@ -77,6 +77,26 @@ describe('get_node handler', () => {
     });
   });
 
+  it('names the requested id when the root id getter fails', async () => {
+    const cause = new Error('Attempted to invoke callback with invalid id');
+    const node = fake({ name: 'Broken' });
+    Object.defineProperty(node, 'id', {
+      get: () => {
+        throw cause;
+      },
+    });
+    await expect(
+      createGetNodeHandler(fakeFigma({ '1:2': node }))({ nodeId: '1:2' }),
+    ).rejects.toMatchObject({
+      cause,
+      message: expect.stringContaining(
+        'serializeNode(1:2) failed: Attempted to invoke callback with invalid id (node 1:2 "Broken", read stage: native fields)',
+      ),
+      nodeId: '1:2',
+      stage: 'native fields',
+    });
+  });
+
   it('reports a failed page probe and refreshes it on the next serialization invocation', async () => {
     const node = fake();
     Object.defineProperty(node, 'width', {

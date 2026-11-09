@@ -102,6 +102,29 @@ describe('get_nodes_info handler', () => {
     });
   });
 
+  it('names the requested id when a root id getter fails', async () => {
+    const broken = fake({ name: 'Broken' });
+    Object.defineProperty(broken, 'id', {
+      get: () => {
+        throw new Error('Attempted to invoke callback with invalid id');
+      },
+    });
+    const handler = createGetNodesInfoHandler(
+      fakeFigma({ '1:2': broken, '1:4': fake({ id: '1:4' }) }),
+    );
+    await expect(handler({ nodeIds: ['1:2', '1:4'] })).resolves.toMatchObject({
+      nodes: [null, { id: '1:4', name: 'Node', width: 10 }],
+      serializationErrors: [
+        {
+          index: 0,
+          nodeId: '1:2',
+          stage: 'native fields',
+          message: expect.stringContaining('serializeNode(1:2) failed:'),
+        },
+      ],
+    });
+  });
+
   it('distinguishes serialization and lookup failures and shares one health probe', async () => {
     const lookup = vi.fn<(id: string) => Promise<BaseNode | null>>(async id => {
       if (id === '0:1') return { id, type: 'PAGE' } as BaseNode;

@@ -35,13 +35,13 @@ export const createGetNodesInfoHandler =
           const run = await serializeTrees([scene], budget, figmaCtx);
           return { id, run, budget };
         } catch (error) {
-          if (!(error instanceof NodeReadError)) throw error;
-          await error.advise(figmaCtx);
+          if (!(error instanceof NodeReadError) || node === null) throw error;
+          const failure = await error.forRequest(node, id).advise(figmaCtx);
           serializationErrors.push({
             index,
-            nodeId: error.nodeId,
-            stage: error.stage,
-            message: error.message,
+            nodeId: failure.nodeId,
+            stage: failure.stage,
+            message: failure.message,
           });
           return null;
         }
