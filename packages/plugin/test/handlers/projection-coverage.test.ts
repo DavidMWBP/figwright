@@ -22,10 +22,14 @@ import { project, VISUAL_OVERRIDE_FIELDS } from '../../src/handlers/get-design-c
 // to produce it AND projects it, or (b) records it in an allowlist — a conscious decision either
 // way, instead of a silent drop.
 
-/** Deliberately not projected — no codegen meaning, would only bloat the LLM payload. */
+/** Deliberately not projected; each omission is accounted for below. */
 const DROPPED = new Map<string, string>([
   ['locked', 'editor lock state — irrelevant to generated code'],
   ['parentId', 'structural; the projected tree shape already encodes parentage'],
+  [
+    'mainComponentUnavailable',
+    'ordinary reads mark failure; buildNode rejects required lookups instead',
+  ],
 ]);
 
 /** Carried by buildNode (not project()) at full detail — present in results, out of scope here. */

@@ -1,7 +1,45 @@
 import type { GetComponentApiResult } from '@figwright/shared';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createGetComponentApiHandler } from '../../src/handlers/get-component-api.js';
+import { withInstanceIdLookup } from '../../src/node-lookup.js';
+import { CONNECTION_ERROR } from '../read-retry-fake.js';
+
+it.each(['success', 'twice', 'other'] as const)(
+  'bounds required component API lookup: %s',
+  async outcome => {
+    vi.useFakeTimers();
+    try {
+      const lookup = vi
+        .fn<() => Promise<unknown>>()
+        .mockRejectedValueOnce(new Error(outcome === 'other' ? 'denied' : CONNECTION_ERROR));
+      if (outcome === 'twice') lookup.mockRejectedValueOnce(new Error(CONNECTION_ERROR));
+      else lookup.mockResolvedValue(standalone);
+      const ctx = withInstanceIdLookup(
+        fakeFigma({ 'I:1': { ...instance, getMainComponentAsync: lookup } }),
+      );
+      const reading = Promise.resolve(createGetComponentApiHandler(ctx)({ nodeId: 'I:1' })).catch(
+        error => error,
+      );
+      await vi.runAllTimersAsync();
+      const out = await reading;
+      const expected =
+        outcome === 'success'
+          ? {
+              id: 'C:9',
+              name: 'Card',
+              properties: { 'On#0:0': { type: 'BOOLEAN', defaultValue: true } },
+            }
+          : {
+              message: `getMainComponentAsync(I:1) failed: ${outcome === 'other' ? 'denied' : `${CONNECTION_ERROR} Read failed twice.`}`,
+            };
+      expect(out).toMatchObject(expected);
+      expect(lookup).toHaveBeenCalledTimes(outcome === 'other' ? 1 : 2);
+    } finally {
+      vi.useRealTimers();
+    }
+  },
+);
 
 it('attributes a main-component rejection to the instance', async () => {
   const cause = new Error('unavailable');

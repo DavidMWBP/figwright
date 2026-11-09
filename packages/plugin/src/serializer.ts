@@ -26,6 +26,7 @@ import {
 import { TimeSlice } from './cooperative.js';
 import { figmaCall } from './figma-call.js';
 import { cssAngleFromGradientTransform } from './gradient-angle.js';
+import { retryRead } from './read-retry.js';
 import { flattenForest } from './traverse.js';
 
 const isGradient = (paint: Paint): paint is GradientPaint =>
@@ -883,13 +884,15 @@ export const serializeFlatSync = (node: SceneNode): SerializedNode => {
 /** Resolve the main component of an INSTANCE (async; tolerates unavailable/missing components). */
 const resolveMainComponent = async (
   node: SceneNode,
-): Promise<void | SerializedNode['mainComponent']> => {
-  if (node.type !== 'INSTANCE') return undefined;
+  figmaCtx?: typeof figma,
+): Promise<Pick<SerializedNode, 'mainComponent' | 'mainComponentUnavailable'>> => {
+  if (node.type !== 'INSTANCE') return {};
   try {
+    const read = () => (node as InstanceNode).getMainComponentAsync();
     const main = await figmaCall('getMainComponentAsync', node.id, () =>
-      (node as InstanceNode).getMainComponentAsync(),
+      figmaCtx === undefined ? read() : retryRead(figmaCtx, read),
     );
-    if (main === null) return undefined;
+    if (main === null) return {};
     const out: NonNullable<SerializedNode['mainComponent']> = {
       id: main.id,
       name: main.name,
@@ -902,16 +905,20 @@ const resolveMainComponent = async (
       out.componentSetId = parent.id;
       out.componentSetName = parent.name;
     }
-    return out;
-  } catch {
-    return undefined;
+    return { mainComponent: out };
+  } catch (error) {
+    return {
+      mainComponentUnavailable: { message: error instanceof Error ? error.message : String(error) },
+    };
   }
 };
 
-export const serializeFlat = async (node: SceneNode): Promise<SerializedNode> => {
+export const serializeFlat = async (
+  node: SceneNode,
+  figmaCtx?: typeof figma,
+): Promise<SerializedNode> => {
   const out = serializeFlatSync(node);
-  const mainComponent = await resolveMainComponent(node);
-  if (mainComponent !== undefined) out.mainComponent = mainComponent;
+  Object.assign(out, await resolveMainComponent(node, figmaCtx));
   return out;
 };
 
@@ -959,6 +966,7 @@ export interface SerializedRun {
 const serializeInOrder = async (
   nodes: readonly SceneNode[],
   budget: CharBudget | null,
+  figmaCtx?: typeof figma,
 ): Promise<SerializedRun> => {
   const done: SerializedNode[] = [];
   const inFlight: Array<Promise<SerializedNode>> = [];
@@ -972,7 +980,7 @@ const serializeInOrder = async (
   const abandon = (): SerializedRun => ({ nodes: done, complete: false });
   const slice = new TimeSlice();
   for (const node of nodes) {
-    const pending = serializeFlat(node);
+    const pending = serializeFlat(node, figmaCtx);
     // Marked handled up front: when the run stops early or an earlier node fails, the ones still in
     // flight are dropped, and a rejection among them must not surface as unhandled. Awaiting
     // `pending` itself still throws.
@@ -996,7 +1004,8 @@ const serializeInOrder = async (
 export const serializeFlatNodes = (
   nodes: readonly SceneNode[],
   budget: CharBudget | null = null,
-): Promise<SerializedRun> => serializeInOrder(nodes, budget);
+  figmaCtx?: typeof figma,
+): Promise<SerializedRun> => serializeInOrder(nodes, budget, figmaCtx);
 
 /**
  * A search / scan reply: every match, or — when the budget stopped the run — the leading matches
@@ -1016,10 +1025,11 @@ export const toNodeListResult = (
 export const serializeTrees = async (
   roots: readonly SceneNode[],
   budget: CharBudget | null = null,
+  figmaCtx?: typeof figma,
 ): Promise<SerializedRun & { total: number }> => {
   const forest = await flattenForest(roots);
   const total = forest.nodes.length;
-  const run = await serializeInOrder(forest.nodes, budget);
+  const run = await serializeInOrder(forest.nodes, budget, figmaCtx);
   if (!run.complete) return { nodes: [], complete: false, total };
   const out: SerializedNode[] = [];
   const childLists: Array<SerializedNode[] | undefined> = [];

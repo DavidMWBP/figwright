@@ -2,6 +2,7 @@ import type { ComponentPropertyApiEntry, GetComponentApiResult } from '@figwrigh
 
 import type { SandboxToolHandler } from '../dispatcher.js';
 import { figmaCall } from '../figma-call.js';
+import { retryRead } from '../read-retry.js';
 
 /**
  * Resolve a node to the one that owns the full property contract: a COMPONENT_SET as-is, a
@@ -9,6 +10,7 @@ import { figmaCall } from '../figma-call.js';
  * INSTANCE's main component / set. Returns null for anything else.
  */
 const resolvePropertyOwner = async (
+  figmaCtx: typeof figma,
   node: BaseNode,
 ): Promise<ComponentNode | ComponentSetNode | null> => {
   if (node.type === 'COMPONENT_SET') return node;
@@ -17,7 +19,7 @@ const resolvePropertyOwner = async (
   }
   if (node.type === 'INSTANCE') {
     const main = await figmaCall('getMainComponentAsync', node.id, () =>
-      node.getMainComponentAsync(),
+      retryRead(figmaCtx, () => node.getMainComponentAsync()),
     );
     if (main === null) return null;
     return main.parent !== null && main.parent.type === 'COMPONENT_SET' ? main.parent : main;
@@ -41,7 +43,7 @@ export const createGetComponentApiHandler =
     const node = await figmaCtx.getNodeByIdAsync(p.nodeId);
     if (node === null) throw new Error(`get_component_api: node ${p.nodeId} not found`);
 
-    const target = await resolvePropertyOwner(node);
+    const target = await resolvePropertyOwner(figmaCtx, node);
     if (target === null) {
       throw new Error(
         `get_component_api: node ${p.nodeId} (${node.type}) is not a component, component set, or instance`,

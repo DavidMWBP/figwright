@@ -5,6 +5,8 @@ import { createAddComponentPropertyHandler } from '../../src/handlers/add-compon
 import { createBindComponentPropertyHandler } from '../../src/handlers/bind-component-property.js';
 import { createDeleteComponentPropertyHandler } from '../../src/handlers/delete-component-property.js';
 import { createEditComponentPropertyHandler } from '../../src/handlers/edit-component-property.js';
+import { createSandboxHandlers } from '../../src/handlers/registry.js';
+import { CONNECTION_ERROR } from '../read-retry-fake.js';
 
 /** A figma stub whose getNodeByIdAsync resolves from a fixed id → node map. */
 const fakeFigma = (nodes: Record<string, unknown>): typeof figma =>
@@ -100,6 +102,58 @@ describe('add_component_property handler', () => {
 
 describe('bind_component_property handler', () => {
   const boolDef = { 'Show Icon#4:2': { type: 'BOOLEAN', defaultValue: true } };
+
+  it('binds an instance swap property after capture recovers, without replaying the write', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    try {
+      const lookup = vi
+        .fn<() => Promise<unknown>>()
+        .mockRejectedValueOnce(new Error(CONNECTION_ERROR))
+        .mockResolvedValue({ id: 'M:1' });
+      const write = vi.fn<(value: unknown) => void>();
+      const comp = {
+        id: 'C:1',
+        type: 'COMPONENT',
+        parent: null,
+        componentPropertyDefinitions: {
+          'Icon#4:5': { type: 'INSTANCE_SWAP', defaultValue: 'key' },
+        },
+      };
+      const instance = {
+        id: 'I:1',
+        type: 'INSTANCE',
+        parent: comp,
+        overrides: [],
+        findAllWithCriteria: () => [],
+        getMainComponentAsync: lookup,
+        get componentPropertyReferences() {
+          return null;
+        },
+        set componentPropertyReferences(value: unknown) {
+          write(value);
+        },
+      };
+      const ctx = Object.assign(fakeFigma({ 'I:1': instance }), { root: { children: [] } });
+      const reading = Promise.resolve(
+        createSandboxHandlers(ctx).batch!({
+          requestId: 'bind',
+          ops: [
+            {
+              tool: 'bind_component_property',
+              params: { nodeId: 'I:1', field: 'mainComponent', propertyId: 'Icon#4:5' },
+            },
+          ],
+        }),
+      ).catch(error => error);
+      await vi.runAllTimersAsync();
+      expect(await reading).toMatchObject({ ok: true });
+      expect(lookup).toHaveBeenCalledTimes(2);
+      expect(write).toHaveBeenCalledExactlyOnceWith({ mainComponent: 'Icon#4:5' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it('binds a BOOLEAN property to a layer visible reference', async () => {
     const comp = {

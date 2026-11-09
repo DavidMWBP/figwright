@@ -9,5 +9,8 @@ export const createScanTextNodesHandler =
     const scope = await resolveScope(figmaCtx, root);
 
     const matches = await collectMatches(scope, node => node.type === 'TEXT');
-    return toNodeListResult(matches, await serializeFlatNodes(matches, resultCharBudget()));
+    return toNodeListResult(
+      matches,
+      await serializeFlatNodes(matches, resultCharBudget(), figmaCtx),
+    );
   };

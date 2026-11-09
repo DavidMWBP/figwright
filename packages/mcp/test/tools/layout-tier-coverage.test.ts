@@ -24,6 +24,7 @@ const COMPACT_BASE = [
   'width',
   'height',
   'mainComponentId',
+  'mainComponentUnavailable',
   'truncated',
   'deduped',
   'children',

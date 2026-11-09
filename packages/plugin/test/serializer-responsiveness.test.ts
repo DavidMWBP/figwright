@@ -1,12 +1,73 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { resetThrottleForTests } from '../src/cooperative.js';
+import { withInstanceIdLookup } from '../src/node-lookup.js';
 import { serializeFlatNodes, serializeTrees } from '../src/serializer.js';
+import { CONNECTION_ERROR } from './read-retry-fake.js';
 
 describe('native-read time slicing', () => {
   beforeEach(() => {
     resetThrottleForTests();
   });
+
+  it.each([
+    ['flat', serializeFlatNodes],
+    ['forest', serializeTrees],
+  ] as const)(
+    'keeps later %s lookups progressing and output ordered while a component read retries',
+    async (_kind, serialize) => {
+      vi.useFakeTimers();
+      try {
+        let rejectFirst!: (error: Error) => void;
+        const first = new Promise<never>((_resolve, reject) => {
+          rejectFirst = reject;
+        });
+        let resolveLater!: () => void;
+        const later = new Promise<void>(resolve => {
+          resolveLater = resolve;
+        });
+        const lookup = vi
+          .fn<() => Promise<unknown>>()
+          .mockImplementationOnce(() => first)
+          .mockResolvedValue({ id: 'main:0', name: 'First', key: 'first' });
+        const nodes = [
+          lookup,
+          async () => {
+            resolveLater();
+            return { id: 'main:1', name: 'Later', key: 'later' };
+          },
+        ].map(
+          (getMainComponentAsync, i) =>
+            ({
+              id: `instance:${i}`,
+              name: 'Instance',
+              type: 'INSTANCE',
+              visible: true,
+              locked: false,
+              x: 0,
+              y: 0,
+              width: 10,
+              height: 10,
+              parent: null,
+              getMainComponentAsync,
+            }) as unknown as SceneNode,
+        );
+        const reading = serialize(nodes, null, withInstanceIdLookup({} as typeof figma));
+        await later;
+        rejectFirst(new Error(CONNECTION_ERROR));
+        await vi.runAllTimersAsync();
+        const out = await reading;
+        expect(out.complete).toBe(true);
+        expect(out.nodes.map(node => [node.id, node.mainComponent?.id])).toEqual([
+          ['instance:0', 'main:0'],
+          ['instance:1', 'main:1'],
+        ]);
+        expect(lookup).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it.each([
     ['flat', serializeFlatNodes],
