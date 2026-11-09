@@ -186,7 +186,14 @@ const SPECIAL_HANDLERS: Record<string, ToolHandler> = {
   }),
   [LIST_FILES_TOOL_NAME]: async () => {
     const view = await listSessionView(dispatchCtx);
-    return textResult(await handleListFiles(view.connected, dispatchToSession, view.reconnecting));
+    return textResult(
+      await handleListFiles(
+        view.connected,
+        dispatchToSession,
+        view.reconnecting,
+        view.leaderUnreachable,
+      ),
+    );
   },
   [USE_FILE_TOOL_NAME]: async args =>
     textResult(await handleUseFile(args, listSessions, dispatchToSession)),

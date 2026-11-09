@@ -464,6 +464,49 @@ describe('Follower HTTP client', () => {
     }
   });
 
+  it('says why the session list is empty when /ping cannot reach the leader', async () => {
+    // Without the reason an unreachable leader reads exactly like "no plugin is connected".
+    const f = new Follower({
+      leaderUrl: 'http://127.0.0.1:3055',
+      fetch: async () => {
+        throw new TypeError('fetch failed', {
+          cause: Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:3055'), {
+            code: 'ECONNREFUSED',
+          }),
+        });
+      },
+    });
+
+    const view = await f.listSessionView();
+
+    expect(view.connected).toEqual([]);
+    expect(view.reconnecting).toEqual([]);
+    expect(view.leaderUnreachable).toContain('ECONNREFUSED');
+  });
+
+  it('says the leader is unreadable when its /ping sessions field is not a list', async () => {
+    const f = new Follower({
+      leaderUrl: 'http://127.0.0.1:3055',
+      fetch: async () =>
+        Response.json({ ok: true, serverVersion: '1.0.0', sessions: { id: 's-1' } }),
+    });
+
+    const view = await f.listSessionView();
+
+    expect(view.connected).toEqual([]);
+    expect(view.leaderUnreachable).toMatch(/sessions/);
+  });
+
+  it('reports a reachable leader with no plugins as plain empty lists', async () => {
+    const f = new Follower({
+      leaderUrl: 'http://127.0.0.1:3055',
+      fetch: async () =>
+        Response.json({ ok: true, serverVersion: '1.0.0', sessions: [], reconnecting: [] }),
+    });
+
+    expect(await f.listSessionView()).toEqual({ connected: [], reconnecting: [] });
+  });
+
   it('sendRpc threads sessionId so the leader pins the call', async () => {
     const b = await startLeader();
     await attachFakePlugin(b, async () => ({ ok: true }));

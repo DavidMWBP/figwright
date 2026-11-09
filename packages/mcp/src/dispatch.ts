@@ -221,7 +221,9 @@ export const listPluginSessions = async (
  * `list_files`. Everything that routes keeps reading `listPluginSessions`.
  */
 export const listSessionView = async (ctx: DispatchContext): Promise<SessionView> => {
-  if (ctx.node.isConflicted()) return { connected: [], reconnecting: [] };
+  if (ctx.node.isConflicted()) {
+    return { connected: [], reconnecting: [], leaderUnreachable: ctx.node.conflictMessage };
+  }
   if (ctx.node.isLeader()) {
     const relay = ctx.node.getLeader()?.relay;
     return {

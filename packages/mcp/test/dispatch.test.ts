@@ -13,6 +13,7 @@ import {
   DispatchError,
   dispatchTargeted,
   dispatchTool,
+  listSessionView,
   resetRoutingNoticeCache,
   resolveRoutingSession,
 } from '../src/dispatch.js';
@@ -811,6 +812,62 @@ describe('resolveRoutingSession', () => {
     const node = makeNode({ isLeader: () => false, getLeader: () => null });
     const follower = makeFollower({ resolveActiveSession: async () => 'remote-sess' });
     expect(await resolveRoutingSession({ node, follower })).toBe('remote-sess');
+  });
+});
+
+describe('listSessionView', () => {
+  it('reports a conflicted node as having no leader to reach, with the diagnosis', async () => {
+    const asked: string[] = [];
+    const node = makeNode({
+      isConflicted: () => true,
+      isLeader: () => false,
+      conflictMessage: portConflictMessage(3055, {
+        pid: 4242,
+        buildId: 1,
+        serverVersion: '0.4.0',
+        stopped: true,
+        resumed: true,
+      }),
+    });
+    const follower = makeFollower({
+      listSessionView: async () => {
+        asked.push('/ping');
+        return { connected: [], reconnecting: [] };
+      },
+    });
+
+    const view = await listSessionView({ node, follower });
+
+    expect(asked).toEqual([]);
+    expect(view).toEqual({
+      connected: [],
+      reconnecting: [],
+      leaderUnreachable: node.conflictMessage,
+    });
+  });
+
+  it('lists its own relay on the leader node, with nothing unreachable', async () => {
+    const own: PluginSessionInfo = {
+      id: 's-1',
+      fileName: 'Brand',
+      pageName: 'Page 1',
+      lastActivityAt: 1,
+      pluginVersion: '0.5.0',
+    };
+    const node = makeNode({
+      isLeader: () => true,
+      getLeader: () =>
+        ({
+          relay: { listSessionInfo: () => [own], listReconnectingInfo: () => [] },
+          http: undefined as never,
+          port: 0,
+        }) as unknown as ReturnType<Node['getLeader']>,
+    });
+
+    expect(await listSessionView({ node, follower: makeFollower({}) })).toEqual({
+      connected: [own],
+      reconnecting: [],
+    });
   });
 });
 
