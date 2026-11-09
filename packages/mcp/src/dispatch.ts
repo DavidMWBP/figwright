@@ -47,6 +47,8 @@ export const dispatchTool = async (
 
   let lastError: Error | null = null;
   let replyReceived = false;
+  let sessionId = opts.sessionId;
+  let writeSessionResolved = false;
 
   // The election can declare the port wedged *while this call is in flight*, and that verdict has
   // to reach a call that is already blocked — not just the next one. Two halves: the signal cuts
@@ -97,7 +99,7 @@ export const dispatchTool = async (
             toolName,
             args,
             opts.perCallTimeoutMs ?? getRelayBudget(toolName, args),
-            opts.sessionId,
+            sessionId,
             (served, attribution) => {
               replyReceived = served !== undefined || attribution != null;
               reportSkew(leader.relay.skewNotice(served));
@@ -111,13 +113,32 @@ export const dispatchTool = async (
         }
       }
 
+      // Resolve before delivery: a lost HTTP reply cannot tell us which plugin ran the write.
+      // Keep the pin across retries and leadership changes because idempotency is session-local.
+      if (
+        sessionId === undefined &&
+        typeof args === 'object' &&
+        args !== null &&
+        'requestId' in args &&
+        typeof args.requestId === 'string'
+      ) {
+        sessionId = await ctx.follower.resolveActiveSession();
+        if (sessionId === undefined) {
+          throw new DispatchError(
+            ErrorCode.PluginDisconnected,
+            'cannot resolve a plugin session for this write; no write sent',
+          );
+        }
+        writeSessionResolved = true;
+      }
+
       // Follower→leader budget = B + two margins (outermost layer), so it outlives the leader's own
       // relay timer for the same tool.
       const resp = await ctx.follower.sendRpc(
         toolName,
         args,
         undefined,
-        opts.sessionId,
+        sessionId,
         opts.perCallTimeoutMs ?? getFollowerBudget(toolName, args),
         conflicted.signal,
       );
@@ -131,7 +152,7 @@ export const dispatchTool = async (
 
       // 'relay stopping' is the leader rejecting the call because it's shutting down or abdicating —
       // by the retry delay a new leader (possibly this very node) has the port, so it's as transient
-      // as a dropped connection. Safe to replay: writes carry a stable requestId the plugin dedupes.
+      // as a dropped connection. Writes keep their session and stable requestId on every attempt.
       const originalMessage =
         resp.attribution !== undefined && resp.message.endsWith(resp.attribution)
           ? resp.message.slice(0, -resp.attribution.length).trimEnd()
@@ -154,6 +175,9 @@ export const dispatchTool = async (
     throw new DispatchError(ErrorCode.Internal, 'dispatch exhausted retries');
   } catch (cause) {
     const error = cause instanceof Error ? cause : new Error(String(cause), { cause });
+    if (writeSessionResolved && sessionId !== undefined && !error.message.includes(sessionId)) {
+      error.message += ` (write pinned to session ${sessionId})`;
+    }
     if (
       !replyReceived &&
       !error.message.includes('(answered by session ') &&
