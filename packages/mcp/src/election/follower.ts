@@ -60,6 +60,17 @@ const describeTransportError = (err: unknown): string => {
   return `${message} (cause${code === undefined ? '' : ` ${code}`}: ${cause.message})`;
 };
 
+/**
+ * A JSON value's kind, never its content: whatever answers /ping chooses the value, and the
+ * description is echoed into a tool result.
+ */
+const describeType = (value: unknown): string => {
+  if (value === undefined) return 'absent';
+  if (value === null) return 'null';
+  if (typeof value === 'object') return 'an object';
+  return `a ${typeof value}`;
+};
+
 export const DEFAULT_FOLLOWER_RPC_TIMEOUT_MS = 35_000;
 export const DEFAULT_PING_TIMEOUT_MS = 2_000;
 
@@ -242,7 +253,7 @@ export class Follower {
       return {
         connected: [],
         reconnecting: [],
-        leaderUnreachable: `the leader's /ping reply has no sessions list (sessions: ${JSON.stringify(body.sessions) ?? 'absent'})`,
+        leaderUnreachable: `the leader's /ping reply has no sessions list (sessions is ${describeType(body.sessions)})`,
       };
     }
     const connected: PluginSessionInfo[] = [];
@@ -254,6 +265,7 @@ export class Follower {
         pageName: typeof s.pageName === 'string' ? s.pageName : null,
         lastActivityAt: typeof s.lastActivityAt === 'number' ? s.lastActivityAt : 0,
         pluginVersion: typeof s.pluginVersion === 'string' ? s.pluginVersion : 'unknown',
+        ...(typeof s.pluginBuildId === 'number' ? { pluginBuildId: s.pluginBuildId } : {}),
       });
     }
     const reconnecting: ReconnectingSessionInfo[] = [];

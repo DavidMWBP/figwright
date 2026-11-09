@@ -12,8 +12,12 @@ import { defineConfig } from 'vitest/config';
  */
 export default defineConfig({
   plugins: [vue()],
-  // Mirrors the build-time define in vite.config.ts so a component that renders the version can mount.
-  define: { __APP_VERSION__: JSON.stringify('0.0.0-test') },
+  // Mirrors the build-time defines in vite.config.ts so a component that renders the version, and
+  // the relay session that sends the build id, can run.
+  define: {
+    __APP_VERSION__: JSON.stringify('0.0.0-test'),
+    __PLUGIN_BUILD_ID__: JSON.stringify('1700000000000'),
+  },
   test: {
     name: 'plugin',
     include: ['test/**/*.{test,spec}.ts'],

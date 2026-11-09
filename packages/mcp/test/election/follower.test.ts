@@ -12,6 +12,7 @@ import {
   newId,
   PROTOCOL_VERSION,
   type HelloParams,
+  type ListFilesResult,
   SystemMethod,
 } from '@figwright/shared';
 import { decode } from '@msgpack/msgpack';
@@ -21,6 +22,7 @@ import { WebSocket } from 'ws';
 import { Follower } from '../../src/election/follower.js';
 import { attachLeaderEndpoints } from '../../src/election/leader-endpoints.js';
 import { Relay } from '../../src/relay/relay.js';
+import { handleListFiles } from '../../src/tools/list-files.js';
 import { fakeRelay } from '../relay-fake.js';
 
 interface Bound {
@@ -117,6 +119,26 @@ const attachFakePlugin = async (
   await helloReceived;
   b.plugins.push(ws);
 };
+
+/** In-process transport: the leader's real /ping handler answers, with no port opened. */
+const viaLeader =
+  (http: HttpServer): typeof fetch =>
+  async input => {
+    const req = Object.assign(new EventEmitter(), {
+      method: 'GET',
+      url: new URL(String(input)).pathname,
+      headers: { host: '127.0.0.1:3055' },
+    });
+    return new Promise<Response>(resolve => {
+      let status = 0;
+      http.emit('request', req, {
+        writeHead: (s: number) => {
+          status = s;
+        },
+        end: (body: string) => resolve(new Response(body, { status })),
+      });
+    });
+  };
 
 describe('Follower HTTP client', () => {
   it('ping returns true when leader is up', async () => {
@@ -422,26 +444,15 @@ describe('Follower HTTP client', () => {
         4000,
         Buffer.from('heartbeat timeout'),
       );
-      // In-process transport: the leader's real /ping handler answers, with no port opened.
       let pings = 0;
-      const viaLeader: typeof fetch = async input => {
-        pings += 1;
-        const req = Object.assign(new EventEmitter(), {
-          method: 'GET',
-          url: new URL(String(input)).pathname,
-          headers: { host: '127.0.0.1:3055' },
-        });
-        return new Promise<Response>(resolve => {
-          let status = 0;
-          http.emit('request', req, {
-            writeHead: (s: number) => {
-              status = s;
-            },
-            end: (body: string) => resolve(new Response(body, { status })),
-          });
-        });
-      };
-      const f = new Follower({ leaderUrl: 'http://127.0.0.1:3055', fetch: viaLeader });
+      const toLeader = viaLeader(http);
+      const f = new Follower({
+        leaderUrl: 'http://127.0.0.1:3055',
+        fetch: async (...args) => {
+          pings += 1;
+          return toLeader(...args);
+        },
+      });
 
       const view = await f.listSessionView();
 
@@ -461,6 +472,36 @@ describe('Follower HTTP client', () => {
       detach();
       await relay.stop();
       vi.useRealTimers();
+    }
+  });
+
+  it("lists each file's plugin build through a follower, unknown for an older plugin", async () => {
+    const { relay, connect, http } = fakeRelay();
+    const detach = attachLeaderEndpoints(http, { relay, serverVersion: '1.0.0' });
+    try {
+      connect('s-new', 'Brand', null, 1_762_646_400_000);
+      connect('s-old', 'Marketing');
+      const f = new Follower({ leaderUrl: 'http://127.0.0.1:3055', fetch: viaLeader(http) });
+
+      const view = await f.listSessionView();
+      const { serverBuild, files } = await handleListFiles(
+        view.connected,
+        async (sessionId): Promise<ListFilesResult> => ({
+          files: [{ fileKey: null, fileName: sessionId, currentPage: { id: 'p', name: 'P' } }],
+        }),
+        view.reconnecting,
+        view.leaderUnreachable,
+        1_762_732_800_000,
+      );
+
+      expect(serverBuild).toBe('1762732800000 (2025-11-10T00:00:00.000Z)');
+      expect(Object.fromEntries(files.map(file => [file.sessionId, file.pluginBuild]))).toEqual({
+        's-new': '1762646400000 (2025-11-09T00:00:00.000Z)',
+        's-old': 'unknown',
+      });
+    } finally {
+      detach();
+      await relay.stop();
     }
   });
 
@@ -495,6 +536,21 @@ describe('Follower HTTP client', () => {
 
     expect(view.connected).toEqual([]);
     expect(view.leaderUnreachable).toMatch(/sessions/);
+  });
+
+  it('describes a non-list sessions value by its type instead of echoing it', async () => {
+    // Whatever answers /ping decides this value, and the reason lands verbatim in list_files.
+    const huge = { blob: 'x'.repeat(100_000) };
+    const f = new Follower({
+      leaderUrl: 'http://127.0.0.1:3055',
+      fetch: async () => Response.json({ ok: true, serverVersion: '1.0.0', sessions: huge }),
+    });
+
+    const reason = (await f.listSessionView()).leaderUnreachable!;
+
+    expect(reason).toContain('an object');
+    expect(reason).not.toContain('xxxx');
+    expect(reason.length).toBeLessThan(200);
   });
 
   it('reports a reachable leader with no plugins as plain empty lists', async () => {
