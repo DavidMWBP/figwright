@@ -20,6 +20,11 @@ export interface SessionView {
    * because nothing could be asked, not because no plugin is connected.
    */
   leaderUnreachable?: string;
+  /**
+   * Build stamp of the leader holding these sessions. Absent when the leader could not be read or
+   * predates build ids.
+   */
+  leaderBuildId?: number;
 }
 
 /** A /ping reply body, or why there is none. */
@@ -242,7 +247,9 @@ export class Follower {
   /**
    * The connected sessions plus those inside their disconnect grace window, from one `/ping` so the
    * two lists describe the same moment. A leader that predates `reconnecting` yields an empty one.
-   * A /ping that fails, or whose `sessions` is not a list, sets `leaderUnreachable` instead.
+   * A /ping that fails, or whose `sessions` is not a list, sets `leaderUnreachable` instead. The
+   * leader's `buildId` rides along as `leaderBuildId`, so list_files names the build that owns the
+   * sessions rather than this follower's.
    */
   async listSessionView(): Promise<SessionView> {
     const outcome = await this.pingOutcome();
@@ -292,7 +299,9 @@ export class Follower {
         },
       });
     }
-    return { connected, reconnecting };
+    return typeof body.buildId === 'number'
+      ? { connected, reconnecting, leaderBuildId: body.buildId }
+      : { connected, reconnecting };
   }
 
   async sendRpc(

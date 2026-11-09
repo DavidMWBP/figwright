@@ -475,13 +475,23 @@ describe('Follower HTTP client', () => {
     }
   });
 
-  it("lists each file's plugin build through a follower, unknown for an older plugin", async () => {
+  it("lists the leader's server build and each file's plugin build through a follower", async () => {
     const { relay, connect, http } = fakeRelay();
-    const detach = attachLeaderEndpoints(http, { relay, serverVersion: '1.0.0' });
+    const detach = attachLeaderEndpoints(http, {
+      relay,
+      serverVersion: '1.0.0',
+      buildId: 1_762_732_800_000,
+    });
     try {
       connect('s-new', 'Brand', null, 1_762_646_400_000);
       connect('s-old', 'Marketing');
-      const f = new Follower({ leaderUrl: 'http://127.0.0.1:3055', fetch: viaLeader(http) });
+      // The follower runs a different build: list_files must name the leader's, which owns the
+      // plugin sessions and runs the calls.
+      const f = new Follower({
+        leaderUrl: 'http://127.0.0.1:3055',
+        fetch: viaLeader(http),
+        buildId: 1_762_819_200_000,
+      });
 
       const view = await f.listSessionView();
       const { serverBuild, files } = await handleListFiles(
@@ -491,7 +501,7 @@ describe('Follower HTTP client', () => {
         }),
         view.reconnecting,
         view.leaderUnreachable,
-        1_762_732_800_000,
+        view.leaderBuildId,
       );
 
       expect(serverBuild).toBe('1762732800000 (2025-11-10T00:00:00.000Z)');
@@ -523,6 +533,47 @@ describe('Follower HTTP client', () => {
     expect(view.connected).toEqual([]);
     expect(view.reconnecting).toEqual([]);
     expect(view.leaderUnreachable).toContain('ECONNREFUSED');
+  });
+
+  it("names no server build, not the follower's own, when the leader is unreachable", async () => {
+    const f = new Follower({
+      leaderUrl: 'http://127.0.0.1:3055',
+      buildId: 1_762_819_200_000,
+      fetch: async () => {
+        throw new TypeError('fetch failed');
+      },
+    });
+
+    const view = await f.listSessionView();
+    const { serverBuild } = await handleListFiles(
+      view.connected,
+      async () => ({ files: [] }),
+      view.reconnecting,
+      view.leaderUnreachable,
+      view.leaderBuildId,
+    );
+
+    expect(serverBuild).toBe('unknown');
+  });
+
+  it('names no server build when the leader predates build ids', async () => {
+    const f = new Follower({
+      leaderUrl: 'http://127.0.0.1:3055',
+      buildId: 1_762_819_200_000,
+      fetch: async () =>
+        Response.json({ ok: true, serverVersion: '1.0.0', sessions: [], reconnecting: [] }),
+    });
+
+    const view = await f.listSessionView();
+    const { serverBuild } = await handleListFiles(
+      view.connected,
+      async () => ({ files: [] }),
+      view.reconnecting,
+      view.leaderUnreachable,
+      view.leaderBuildId,
+    );
+
+    expect(serverBuild).toBe('unknown');
   });
 
   it('says the leader is unreadable when its /ping sessions field is not a list', async () => {
