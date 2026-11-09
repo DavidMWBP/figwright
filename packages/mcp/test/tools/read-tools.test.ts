@@ -66,6 +66,11 @@ describe('M1 read tools — definitions', () => {
       required: ['nodeIds'],
       properties: { nodeIds: { type: 'array', items: { type: 'string' } } },
     });
+    // These are the output keys an agent must inspect to avoid treating a null as a missing id.
+    expect(getNodesInfoTool.description).toMatch(/lookupErrors.*index.*nodeId.*message/);
+    expect(getNodesInfoTool.description).toMatch(
+      /serializationErrors.*index.*nodeId.*stage.*message/,
+    );
   });
 
   it('get_metadata declares empty input', () => {

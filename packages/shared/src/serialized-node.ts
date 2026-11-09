@@ -771,6 +771,16 @@ export const LookupErrorsSchema = z
 export const GetNodesInfoResultSchema = z.object({
   nodes: z.array(SerializedNodeSchema.nullable()),
   lookupErrors: LookupErrorsSchema,
+  serializationErrors: z
+    .array(
+      z.object({
+        index: z.number().int().nonnegative(),
+        nodeId: z.string(),
+        stage: z.string(),
+        message: z.string(),
+      }),
+    )
+    .optional(),
 });
 export type GetNodesInfoResult = z.infer<typeof GetNodesInfoResultSchema>;
 

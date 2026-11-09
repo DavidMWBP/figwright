@@ -26,6 +26,7 @@ import {
 import { TimeSlice } from './cooperative.js';
 import { figmaCall } from './figma-call.js';
 import { cssAngleFromGradientTransform } from './gradient-angle.js';
+import { NodeReadError, readNode } from './node-read.js';
 import { retryRead } from './read-retry.js';
 import { flattenForest } from './traverse.js';
 
@@ -886,7 +887,6 @@ const resolveMainComponent = async (
   node: SceneNode,
   figmaCtx?: typeof figma,
 ): Promise<Pick<SerializedNode, 'mainComponent' | 'mainComponentUnavailable'>> => {
-  if (node.type !== 'INSTANCE') return {};
   try {
     const read = () => (node as InstanceNode).getMainComponentAsync();
     const main = await figmaCall('getMainComponentAsync', node.id, () =>
@@ -907,8 +907,10 @@ const resolveMainComponent = async (
     }
     return { mainComponent: out };
   } catch (error) {
+    const failure = new NodeReadError(node, 'main component', error);
+    if (figmaCtx !== undefined) await failure.advise(figmaCtx);
     return {
-      mainComponentUnavailable: { message: error instanceof Error ? error.message : String(error) },
+      mainComponentUnavailable: { message: failure.message },
     };
   }
 };
@@ -917,8 +919,8 @@ export const serializeFlat = async (
   node: SceneNode,
   figmaCtx?: typeof figma,
 ): Promise<SerializedNode> => {
-  const out = serializeFlatSync(node);
-  Object.assign(out, await resolveMainComponent(node, figmaCtx));
+  const out = readNode(node, 'native fields', () => serializeFlatSync(node));
+  if (out.type === 'INSTANCE') Object.assign(out, await resolveMainComponent(node, figmaCtx));
   return out;
 };
 
@@ -974,7 +976,13 @@ const serializeInOrder = async (
     const out = await inFlight.shift()!;
     done.push(out);
     // +1 for the separating comma.
-    if (budget !== null) budget.used += JSON.stringify(out).length + 1;
+    if (budget !== null) {
+      budget.used += readNode(
+        nodes[done.length - 1]!,
+        'serialized fields',
+        () => JSON.stringify(out).length + 1,
+      );
+    }
   };
   const spent = (): boolean => budget !== null && budget.used > budget.limit;
   const abandon = (): SerializedRun => ({ nodes: done, complete: false });

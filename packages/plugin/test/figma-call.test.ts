@@ -1,8 +1,20 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { figmaCall } from '../src/figma-call.js';
 
 describe('Figma boundary attribution', () => {
+  it('attributes a synchronous callback rejection without repeating the boundary', async () => {
+    const cause = new Error('Attempted to invoke callback with invalid id');
+    const read = vi.fn<() => Promise<never>>(() => {
+      throw cause;
+    });
+    await expect(figmaCall('getMainComponentAsync', '1:2', read)).rejects.toMatchObject({
+      cause,
+      message: 'getMainComponentAsync(1:2) failed: Attempted to invoke callback with invalid id',
+    });
+    expect(read).toHaveBeenCalledOnce();
+  });
+
   it.each([
     ['getNodeByIdAsync', '1:2'],
     ['exportAsync', '1:2'],
