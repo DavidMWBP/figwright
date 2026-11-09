@@ -24,7 +24,10 @@ export const listFilesTool: ToolSpec = {
     'reaches them until they do, and they leave the list when the window ends. closedBy is ' +
     '"server" (the server stopped hearing the plugin), "plugin" (the plugin closed it; code 4000 ' +
     'means it stopped hearing the server) or "lost" (code 1006: dropped with no close frame). ' +
-    'A plugin closed or reloaded in Figma is not listed: its next run gets a new sessionId.',
+    'A plugin closed or reloaded in Figma is not listed: its next run gets a new sessionId. ' +
+    'leaderUnreachable, present only when set, means this server could not read the plugin ' +
+    'sessions from the Figwright leader process and says why; the empty lists then do not mean ' +
+    'no plugin is connected.',
   inputSchema: z.object({}),
   // Still a read on the wire, under its own name: the server dispatches `list_files` to each
   // connected session and the plugin's handler is unchanged. Only the aggregation across sessions
@@ -154,7 +157,12 @@ export const handleListFiles = async (
   sessions: readonly PluginSessionInfo[],
   dispatch: SessionDispatch,
   reconnectingSessions: readonly ReconnectingSessionInfo[] = [],
-): Promise<{ files: ConnectedFile[]; reconnecting: ReconnectingFile[] }> => {
+  leaderUnreachable?: string,
+): Promise<{
+  files: ConnectedFile[];
+  reconnecting: ReconnectingFile[];
+  leaderUnreachable?: string;
+}> => {
   const target = getFileTarget();
   // Sessions arrive newest-activity-first, so the first is the one live routing would pick.
   const routedId = sessions[0]?.id;
@@ -198,5 +206,8 @@ export const handleListFiles = async (
     reason: s.reason,
   }));
 
-  return { files, reconnecting };
+  // Absent rather than undefined on the happy path, for the same reason as `error` above.
+  return leaderUnreachable === undefined
+    ? { files, reconnecting }
+    : { files, reconnecting, leaderUnreachable };
 };

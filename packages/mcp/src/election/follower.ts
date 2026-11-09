@@ -15,7 +15,15 @@ import { ABDICATE_PATH, PING_PATH, RPC_PATH } from './leader-endpoints.js';
 export interface SessionView {
   connected: readonly PluginSessionInfo[];
   reconnecting: readonly ReconnectingSessionInfo[];
+  /**
+   * Set when the leader's sessions could not be read at all, saying why; the lists are then empty
+   * because nothing could be asked, not because no plugin is connected.
+   */
+  leaderUnreachable?: string;
 }
+
+/** A /ping reply body, or why there is none. */
+type PingOutcome = { body: Record<string, unknown> } | { error: string };
 
 const CLOSED_BY: ReadonlySet<DisconnectReason['closedBy']> = new Set(['server', 'plugin', 'lost']);
 
@@ -112,20 +120,27 @@ export class Follower {
    * between them.
    */
   private async fetchPing(): Promise<Record<string, unknown> | undefined> {
+    const outcome = await this.pingOutcome();
+    return 'body' in outcome ? outcome.body : undefined;
+  }
+
+  /** FetchPing, keeping the reason a failed /ping gave for anything that reports it. */
+  private async pingOutcome(): Promise<PingOutcome> {
+    const url = `${this.opts.leaderUrl}${PING_PATH}`;
     try {
-      const res = await this.opts.fetch(`${this.opts.leaderUrl}${PING_PATH}`, {
+      const res = await this.opts.fetch(url, {
         signal: AbortSignal.timeout(this.opts.pingTimeoutMs),
       });
       if (!res.ok) {
         releaseBody(res);
-        return undefined;
+        return { error: `${url} answered HTTP ${res.status}` };
       }
       const body: unknown = await res.json();
       return typeof body === 'object' && body !== null
-        ? (body as Record<string, unknown>)
-        : undefined;
-    } catch {
-      return undefined;
+        ? { body: body as Record<string, unknown> }
+        : { error: `${url} answered with a body that is not an object` };
+    } catch (err) {
+      return { error: `${url} failed: ${describeTransportError(err)}` };
     }
   }
 
@@ -216,11 +231,22 @@ export class Follower {
   /**
    * The connected sessions plus those inside their disconnect grace window, from one `/ping` so the
    * two lists describe the same moment. A leader that predates `reconnecting` yields an empty one.
+   * A /ping that fails, or whose `sessions` is not a list, sets `leaderUnreachable` instead.
    */
   async listSessionView(): Promise<SessionView> {
-    const body = await this.fetchPing();
+    const outcome = await this.pingOutcome();
+    if ('error' in outcome)
+      return { connected: [], reconnecting: [], leaderUnreachable: outcome.error };
+    const { body } = outcome;
+    if (!Array.isArray(body.sessions)) {
+      return {
+        connected: [],
+        reconnecting: [],
+        leaderUnreachable: `the leader's /ping reply has no sessions list (sessions: ${JSON.stringify(body.sessions) ?? 'absent'})`,
+      };
+    }
     const connected: PluginSessionInfo[] = [];
-    for (const s of records(body?.sessions)) {
+    for (const s of records(body.sessions)) {
       if (typeof s.id !== 'string') continue;
       connected.push({
         id: s.id,
@@ -231,7 +257,7 @@ export class Follower {
       });
     }
     const reconnecting: ReconnectingSessionInfo[] = [];
-    for (const s of records(body?.reconnecting)) {
+    for (const s of records(body.reconnecting)) {
       const reason = s.reason as Record<string, unknown> | null | undefined;
       if (
         typeof s.id !== 'string' ||

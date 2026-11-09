@@ -85,6 +85,15 @@ describe('handleListFiles', () => {
     expect(await handleListFiles([], replying({}), [])).toEqual({ files: [], reconnecting: [] });
   });
 
+  it('says the leader is unreachable, and why, instead of only listing nothing', async () => {
+    const reason = '/ping to http://127.0.0.1:3055 failed: fetch failed';
+    expect(await handleListFiles([], replying({}), [], reason)).toEqual({
+      files: [],
+      reconnecting: [],
+      leaderUnreachable: reason,
+    });
+  });
+
   it('lists a dropped session apart from the connected one, with how long ago and why', async () => {
     vi.useFakeTimers();
     try {
