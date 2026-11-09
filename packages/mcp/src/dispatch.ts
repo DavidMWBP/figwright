@@ -23,6 +23,8 @@ export interface DispatchContext {
   node: Node;
   follower: Follower;
   log?: (msg: string) => void;
+  /** This process's build stamp, reported as the leader's when this node leads. Defaults to 0. */
+  buildId?: number;
 }
 
 export class DispatchError extends Error {
@@ -229,6 +231,7 @@ export const listSessionView = async (ctx: DispatchContext): Promise<SessionView
     return {
       connected: relay?.listSessionInfo() ?? [],
       reconnecting: relay?.listReconnectingInfo() ?? [],
+      leaderBuildId: ctx.buildId ?? 0,
     };
   }
   return ctx.follower.listSessionView();

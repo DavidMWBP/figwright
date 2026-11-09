@@ -846,7 +846,7 @@ describe('listSessionView', () => {
     });
   });
 
-  it('lists its own relay on the leader node, with nothing unreachable', async () => {
+  it('lists its own relay and build on the leader node, with nothing unreachable', async () => {
     const own: PluginSessionInfo = {
       id: 's-1',
       fileName: 'Brand',
@@ -864,9 +864,12 @@ describe('listSessionView', () => {
         }) as unknown as ReturnType<Node['getLeader']>,
     });
 
-    expect(await listSessionView({ node, follower: makeFollower({}) })).toEqual({
+    expect(
+      await listSessionView({ node, follower: makeFollower({}), buildId: 1_762_732_800_000 }),
+    ).toEqual({
       connected: [own],
       reconnecting: [],
+      leaderBuildId: 1_762_732_800_000,
     });
   });
 });
