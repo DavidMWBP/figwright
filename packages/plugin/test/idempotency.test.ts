@@ -16,7 +16,7 @@ describe('createIdempotencyCache', () => {
   it('runs the handler once for overlapping calls with the same key', async () => {
     const cache = createIdempotencyCache();
     const pending = deferred<{ ok: boolean }>();
-    const fn = vi.fn(() => pending.promise);
+    const fn = vi.fn<() => Promise<{ ok: boolean }>>(() => pending.promise);
     const first = cache.run('same', fn);
     const second = cache.run('same', fn);
     expect(cache.size()).toBe(0);
@@ -31,16 +31,15 @@ describe('createIdempotencyCache', () => {
   it('shares an overlapping rejection and releases the key for a later retry', async () => {
     const cache = createIdempotencyCache();
     const pending = deferred<unknown>();
-    const fn = vi.fn(() => pending.promise);
+    const fn = vi.fn<() => Promise<unknown>>(() => pending.promise);
     const first = cache.run('same', fn);
     const second = cache.run('same', fn);
     const error = new Error('write failed');
-    const outcomes = Promise.all([
-      expect(first).rejects.toBe(error),
-      expect(second).rejects.toBe(error),
-    ]);
+    const outcomes = Promise.allSettled([first, second]);
     pending.reject(error);
-    await outcomes;
+    const [firstOutcome, secondOutcome] = await outcomes;
+    expect(firstOutcome).toStrictEqual({ status: 'rejected', reason: error });
+    expect(secondOutcome).toStrictEqual({ status: 'rejected', reason: error });
     expect(fn).toHaveBeenCalledTimes(1);
     expect(cache.size()).toBe(0);
 
@@ -54,7 +53,7 @@ describe('createIdempotencyCache', () => {
     const cache = createIdempotencyCache(undefined, () => clock);
     const pending = deferred<string>();
     const started = deferred<void>();
-    const fn = vi.fn(() => {
+    const fn = vi.fn<() => Promise<string>>(() => {
       started.resolve();
       return pending.promise;
     });
@@ -85,11 +84,11 @@ describe('createIdempotencyCache', () => {
     const cache = createIdempotencyCache();
     const pending = deferred<string>();
     const started = deferred<void>();
-    const firstFn = vi.fn(() => {
+    const firstFn = vi.fn<() => Promise<string>>(() => {
       started.resolve();
       return pending.promise;
     });
-    const secondFn = vi.fn(() => 'second');
+    const secondFn = vi.fn<() => string>(() => 'second');
     const first = cache.run('a', firstFn);
     await started.promise;
 
