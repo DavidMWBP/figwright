@@ -3,12 +3,12 @@ import type { SandboxToolHandler } from './dispatcher.js';
 export const DEFAULT_IDEMPOTENCY_TTL_MS = 60_000;
 
 interface Entry {
-  result: unknown;
-  ts: number;
+  result: Promise<unknown>;
+  ts: number | undefined;
 }
 
 export interface IdempotencyCache {
-  /** Run fn unless this requestId already produced a result within the TTL; then replay it. */
+  /** Share in-flight calls by requestId and replay successful results within the TTL. */
   run(requestId: string | undefined, fn: () => unknown | Promise<unknown>): Promise<unknown>;
   size(): number;
 }
@@ -27,7 +27,7 @@ export const createIdempotencyCache = (
   const prune = (): void => {
     const cutoff = now() - ttlMs;
     for (const [key, entry] of map) {
-      if (entry.ts < cutoff) map.delete(key);
+      if (entry.ts !== undefined && entry.ts < cutoff) map.delete(key);
     }
   };
 
@@ -35,13 +35,21 @@ export const createIdempotencyCache = (
     async run(requestId, fn) {
       if (requestId === undefined) return fn(); // no key → no dedup
       const hit = map.get(requestId);
-      if (hit !== undefined && now() - hit.ts < ttlMs) return hit.result;
-      const result = await fn();
-      map.set(requestId, { result, ts: now() });
-      prune();
-      return result;
+      if (hit !== undefined && (hit.ts === undefined || now() - hit.ts < ttlMs)) return hit.result;
+      // Defer fn until its in-flight entry is reserved.
+      const entry: Entry = { result: Promise.resolve().then(fn), ts: undefined };
+      map.set(requestId, entry);
+      try {
+        const result = await entry.result;
+        entry.ts = now();
+        prune();
+        return result;
+      } catch (error) {
+        map.delete(requestId);
+        throw error;
+      }
     },
-    size: () => map.size,
+    size: () => [...map.values()].filter(entry => entry.ts !== undefined).length,
   };
 };
 

@@ -2,7 +2,104 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createIdempotencyCache, idempotent } from '../src/idempotency.js';
 
+const deferred = <T>() => {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+};
+
 describe('createIdempotencyCache', () => {
+  it('runs the handler once for overlapping calls with the same key', async () => {
+    const cache = createIdempotencyCache();
+    const pending = deferred<{ ok: boolean }>();
+    const fn = vi.fn(() => pending.promise);
+    const first = cache.run('same', fn);
+    const second = cache.run('same', fn);
+    expect(cache.size()).toBe(0);
+
+    const result = { ok: true };
+    pending.resolve(result);
+    expect(await first).toBe(result);
+    expect(await second).toBe(result);
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it('shares an overlapping rejection and releases the key for a later retry', async () => {
+    const cache = createIdempotencyCache();
+    const pending = deferred<unknown>();
+    const fn = vi.fn(() => pending.promise);
+    const first = cache.run('same', fn);
+    const second = cache.run('same', fn);
+    const error = new Error('write failed');
+    const outcomes = Promise.all([
+      expect(first).rejects.toBe(error),
+      expect(second).rejects.toBe(error),
+    ]);
+    pending.reject(error);
+    await outcomes;
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(cache.size()).toBe(0);
+
+    fn.mockResolvedValueOnce('retried');
+    expect(await cache.run('same', fn)).toBe('retried');
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps in-flight calls and expires success 60 seconds after completion', async () => {
+    let clock = 0;
+    const cache = createIdempotencyCache(undefined, () => clock);
+    const pending = deferred<string>();
+    const started = deferred<void>();
+    const fn = vi.fn(() => {
+      started.resolve();
+      return pending.promise;
+    });
+    const first = cache.run('slow', fn);
+    await started.promise;
+
+    clock = 119_999;
+    await cache.run('other', () => 'other'); // pruning must retain the in-flight call
+    clock = 120_000;
+    const second = cache.run('slow', fn);
+    pending.resolve('done');
+    expect(await first).toBe('done');
+    expect(await second).toBe('done');
+    expect(fn).toHaveBeenCalledTimes(1);
+
+    clock += 59_999;
+    expect(await cache.run('slow', fn)).toBe('done');
+    expect(fn).toHaveBeenCalledTimes(1);
+
+    clock += 1;
+    fn.mockResolvedValueOnce('fresh');
+    expect(await cache.run('slow', fn)).toBe('fresh');
+    expect(fn).toHaveBeenCalledTimes(2);
+    expect(cache.size()).toBe(1);
+  });
+
+  it('runs overlapping different keys independently', async () => {
+    const cache = createIdempotencyCache();
+    const pending = deferred<string>();
+    const started = deferred<void>();
+    const firstFn = vi.fn(() => {
+      started.resolve();
+      return pending.promise;
+    });
+    const secondFn = vi.fn(() => 'second');
+    const first = cache.run('a', firstFn);
+    await started.promise;
+
+    expect(await cache.run('b', secondFn)).toBe('second');
+    expect(firstFn).toHaveBeenCalledTimes(1);
+    expect(secondFn).toHaveBeenCalledTimes(1);
+    pending.resolve('first');
+    expect(await first).toBe('first');
+  });
+
   it('runs once per requestId and replays the cached result', async () => {
     const cache = createIdempotencyCache();
     const fn = vi.fn<() => Promise<{ token: number }>>(async () => ({ token: Math.random() }));
