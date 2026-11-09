@@ -181,6 +181,34 @@ describe('Follower HTTP client', () => {
     expect(resp.requestId).toBe('r-dead');
   });
 
+  it('sendRpc keeps the network cause of a failed fetch', async () => {
+    // Undici's shape when the leader drops the socket: a generic TypeError over a coded cause.
+    const cause = Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' });
+    const f = new Follower({
+      leaderUrl: 'http://leader.test',
+      fetch: async () => {
+        throw new TypeError('fetch failed', { cause });
+      },
+    });
+    const resp = await f.sendRpc('get_document', undefined, 'r-reset');
+    if (resp.kind !== 'err') throw new Error(`expected err, got ${resp.kind}`);
+    expect(resp.message).toMatch(/^follower rpc transport: fetch failed/);
+    expect(resp.message).toContain('UND_ERR_SOCKET');
+    expect(resp.message).toContain('other side closed');
+  });
+
+  it('sendRpc reports a failed fetch without a cause as-is', async () => {
+    const f = new Follower({
+      leaderUrl: 'http://leader.test',
+      fetch: async () => {
+        throw new TypeError('fetch failed');
+      },
+    });
+    const resp = await f.sendRpc('get_document', undefined, 'r-bare');
+    if (resp.kind !== 'err') throw new Error(`expected err, got ${resp.kind}`);
+    expect(resp.message).toBe('follower rpc transport: fetch failed');
+  });
+
   it('sendRpc ends early when the caller aborts, without waiting out its budget', async () => {
     // A leader that never answers — the shape of a wedged one. The budget here is 60s, so the only
     // thing that can end this call in test time is the abort actually reaching the request.

@@ -24,6 +24,19 @@ const releaseBody = (res: Response): void => {
   void res.body?.cancel().catch(() => undefined);
 };
 
+/**
+ * A failed fetch's own message is a generic "fetch failed"; what actually went wrong (a reset, a
+ * refused connection, a closed socket) sits on its nested cause, so carry its code and message
+ * too.
+ */
+const describeTransportError = (err: unknown): string => {
+  const message = err instanceof Error ? err.message : String(err);
+  const cause = err instanceof Error ? err.cause : undefined;
+  if (!(cause instanceof Error)) return message;
+  const code = (cause as NodeJS.ErrnoException).code;
+  return `${message} (cause${code === undefined ? '' : ` ${code}`}: ${cause.message})`;
+};
+
 export const DEFAULT_FOLLOWER_RPC_TIMEOUT_MS = 35_000;
 export const DEFAULT_PING_TIMEOUT_MS = 2_000;
 
@@ -240,12 +253,13 @@ export class Follower {
         signal,
       });
     } catch (err) {
-      this.opts.log(`[follower] rpc transport error: ${(err as Error).message}`);
+      const reason = describeTransportError(err);
+      this.opts.log(`[follower] rpc transport error: ${reason}`);
       return {
         kind: 'err',
         requestId: rpc.requestId,
         code: ErrorCode.Internal,
-        message: `follower rpc transport: ${(err as Error).message}`,
+        message: `follower rpc transport: ${reason}`,
       };
     }
 

@@ -68,6 +68,60 @@ describe('dispatchTool', () => {
       message: 'follower rpc transport: unavailable (no session answered)',
     });
   });
+  it('adds no outcome text when a read exhausts its transport retries', async () => {
+    vi.useFakeTimers();
+    const sendRpc = vi.fn<() => Promise<RpcResponse>>(async () => ({
+      kind: 'err',
+      requestId: 'r',
+      code: ErrorCode.Internal,
+      message: 'follower rpc transport: fetch failed',
+    }));
+    try {
+      const result = dispatchTool(
+        { node: makeNode({ isLeader: () => false }), follower: makeFollower({ sendRpc }) },
+        'get_node',
+        { nodeId: '1:2' },
+        { retryDelayMs: 1 },
+      ).catch(e => e);
+      await vi.runAllTimersAsync();
+      expect(sendRpc).toHaveBeenCalledTimes(3);
+      expect(((await result) as Error).message).toBe(
+        'follower rpc transport: fetch failed (no session answered)',
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it('does not retry a write rejected by the plugin or call its outcome unknown', async () => {
+    vi.useFakeTimers();
+    const attribution = '(answered by session session-a, file "Draft")';
+    const sendRpc = vi.fn<() => Promise<RpcResponse>>(
+      async () =>
+        ({
+          kind: 'err',
+          requestId: 'w-1',
+          code: ErrorCode.InvalidParams,
+          message: `node not found ${attribution}`,
+          attribution,
+        }) as RpcResponse,
+    );
+    try {
+      const result = dispatchTool(
+        { node: makeNode({ isLeader: () => false }), follower: makeFollower({ sendRpc }) },
+        'rename_node',
+        { nodeId: '1:2', name: 'x', requestId: 'w-1' },
+        { retryDelayMs: 1, sessionId: 'session-a' },
+      ).catch(e => e);
+      await vi.runAllTimersAsync();
+      expect(sendRpc).toHaveBeenCalledTimes(1);
+      expect(await result).toMatchObject({
+        code: ErrorCode.InvalidParams,
+        message: `node not found ${attribution}`,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it('does not retry a plugin rejection because its filename contains transport', async () => {
     vi.useFakeTimers();
     const attribution = '(answered by session session-a, file "transport")';

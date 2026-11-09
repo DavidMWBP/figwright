@@ -49,6 +49,13 @@ export const dispatchTool = async (
   let replyReceived = false;
   let sessionId = opts.sessionId;
   let writeSessionResolved = false;
+  const writeRequestId =
+    typeof args === 'object' &&
+    args !== null &&
+    'requestId' in args &&
+    typeof args.requestId === 'string'
+      ? args.requestId
+      : undefined;
 
   // The election can declare the port wedged *while this call is in flight*, and that verdict has
   // to reach a call that is already blocked — not just the next one. Two halves: the signal cuts
@@ -115,13 +122,7 @@ export const dispatchTool = async (
 
       // Resolve before delivery: a lost HTTP reply cannot tell us which plugin ran the write.
       // Keep the pin across retries and leadership changes because idempotency is session-local.
-      if (
-        sessionId === undefined &&
-        typeof args === 'object' &&
-        args !== null &&
-        'requestId' in args &&
-        typeof args.requestId === 'string'
-      ) {
+      if (sessionId === undefined && writeRequestId !== undefined) {
         sessionId = await ctx.follower.resolveActiveSession();
         if (sessionId === undefined) {
           throw new DispatchError(
@@ -152,7 +153,11 @@ export const dispatchTool = async (
 
       // 'relay stopping' is the leader rejecting the call because it's shutting down or abdicating —
       // by the retry delay a new leader (possibly this very node) has the port, so it's as transient
-      // as a dropped connection. Writes keep their session and stable requestId on every attempt.
+      // as a dropped connection. Writes keep their session and stable requestId on every attempt,
+      // but that only makes a retry safe where the plugin's idempotency cache covers it: the same
+      // plugin run (a restart or another session has its own empty cache), a first attempt still in
+      // flight or settled successfully under 60s ago, and never a rejection, which is not kept.
+      // Outside that a retried write can apply twice.
       const originalMessage =
         resp.attribution !== undefined && resp.message.endsWith(resp.attribution)
           ? resp.message.slice(0, -resp.attribution.length).trimEnd()
@@ -161,7 +166,14 @@ export const dispatchTool = async (
         resp.code === ErrorCode.Internal &&
         /transport|fetch failed|ECONNREFUSED|relay stopping/i.test(originalMessage);
       if (!isTransient || attempt === maxAttempts - 1) {
-        throw new DispatchError(resp.code, resp.message);
+        // A lost reply cannot say whether the plugin applied a write; say so, and where it went.
+        throw new DispatchError(
+          resp.code,
+          !replyReceived && writeRequestId !== undefined
+            ? `${resp.message}; outcome unknown, read back before retrying: ${toolName} request ` +
+                `${writeRequestId} was sent to session ${sessionId ?? '(unresolved)'}`
+            : resp.message,
+        );
       }
 
       log(
