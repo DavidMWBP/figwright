@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events';
 import { createServer, type Server as HttpServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
@@ -14,12 +15,13 @@ import {
   SystemMethod,
 } from '@figwright/shared';
 import { decode } from '@msgpack/msgpack';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket } from 'ws';
 
 import { Follower } from '../../src/election/follower.js';
 import { attachLeaderEndpoints } from '../../src/election/leader-endpoints.js';
 import { Relay } from '../../src/relay/relay.js';
+import { fakeRelay } from '../relay-fake.js';
 
 interface Bound {
   http: HttpServer;
@@ -405,6 +407,61 @@ describe('Follower HTTP client', () => {
       fetch: async () => res,
     });
     expect(await f.requestAbdication(200)).toBe('unsupported');
+  });
+
+  it("sees the leader's connected and reconnecting sessions apart, from one /ping", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.UTC(2026, 10, 9, 12));
+    const { relay, connect, http } = fakeRelay();
+    const detach = attachLeaderEndpoints(http, { relay, serverVersion: '1.0.0' });
+    try {
+      connect('s-1', 'Brand');
+      const dropped = connect('s-2', 'Marketing', 'Cover');
+      (dropped.socket as unknown as EventEmitter).emit(
+        'close',
+        4000,
+        Buffer.from('heartbeat timeout'),
+      );
+      // In-process transport: the leader's real /ping handler answers, with no port opened.
+      let pings = 0;
+      const viaLeader: typeof fetch = async input => {
+        pings += 1;
+        const req = Object.assign(new EventEmitter(), {
+          method: 'GET',
+          url: new URL(String(input)).pathname,
+          headers: { host: '127.0.0.1:3055' },
+        });
+        return new Promise<Response>(resolve => {
+          let status = 0;
+          http.emit('request', req, {
+            writeHead: (s: number) => {
+              status = s;
+            },
+            end: (body: string) => resolve(new Response(body, { status })),
+          });
+        });
+      };
+      const f = new Follower({ leaderUrl: 'http://127.0.0.1:3055', fetch: viaLeader });
+
+      const view = await f.listSessionView();
+
+      expect(pings).toBe(1);
+      expect(view.connected.map(s => s.id)).toEqual(['s-1']);
+      expect(view.reconnecting).toEqual([
+        {
+          id: 's-2',
+          fileName: 'Marketing',
+          pageName: 'Cover',
+          pluginVersion: '1.0.0',
+          disconnectedAt: Date.UTC(2026, 10, 9, 12),
+          reason: { code: 4000, closedBy: 'plugin', detail: 'heartbeat timeout' },
+        },
+      ]);
+    } finally {
+      detach();
+      await relay.stop();
+      vi.useRealTimers();
+    }
   });
 
   it('sendRpc threads sessionId so the leader pins the call', async () => {

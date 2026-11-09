@@ -17,6 +17,7 @@ import {
   dispatchTargeted,
   dispatchTool,
   listPluginSessions,
+  listSessionView,
   resolveRoutingSession,
 } from './dispatch.js';
 import { Election } from './election/election.js';
@@ -183,8 +184,10 @@ const SPECIAL_HANDLERS: Record<string, ToolHandler> = {
       })) as GetScreenshotResult,
     ),
   }),
-  [LIST_FILES_TOOL_NAME]: async () =>
-    textResult(await handleListFiles(await listSessions(), dispatchToSession)),
+  [LIST_FILES_TOOL_NAME]: async () => {
+    const view = await listSessionView(dispatchCtx);
+    return textResult(await handleListFiles(view.connected, dispatchToSession, view.reconnecting));
+  },
   [USE_FILE_TOOL_NAME]: async args =>
     textResult(await handleUseFile(args, listSessions, dispatchToSession)),
   [OPEN_FILE_TOOL_NAME]: async args =>

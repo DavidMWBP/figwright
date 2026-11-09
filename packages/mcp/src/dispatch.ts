@@ -1,6 +1,6 @@
 import { ErrorCode, getFollowerBudget, getRelayBudget } from '@figwright/shared';
 
-import type { Follower } from './election/follower.js';
+import type { Follower, SessionView } from './election/follower.js';
 import { type Node, NodeRole } from './election/node.js';
 import type { PluginSessionInfo } from './routing/sessions.js';
 import { getFileTarget, resolveFileTarget } from './routing/target.js';
@@ -214,6 +214,22 @@ export const listPluginSessions = async (
   if (ctx.node.isConflicted()) return [];
   if (ctx.node.isLeader()) return ctx.node.getLeader()?.relay.listSessionInfo() ?? [];
   return ctx.follower.listSessions();
+};
+
+/**
+ * The connected sessions and those inside their disconnect grace window, read at one moment, for
+ * `list_files`. Everything that routes keeps reading `listPluginSessions`.
+ */
+export const listSessionView = async (ctx: DispatchContext): Promise<SessionView> => {
+  if (ctx.node.isConflicted()) return { connected: [], reconnecting: [] };
+  if (ctx.node.isLeader()) {
+    const relay = ctx.node.getLeader()?.relay;
+    return {
+      connected: relay?.listSessionInfo() ?? [],
+      reconnecting: relay?.listReconnectingInfo() ?? [],
+    };
+  }
+  return ctx.follower.listSessionView();
 };
 
 /**

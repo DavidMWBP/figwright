@@ -3,6 +3,19 @@ import type { WebSocket } from 'ws';
 
 export type SessionState = 'connected' | 'disconnected';
 
+/** Why a session's socket dropped, as recorded when it closed. */
+export interface DisconnectReason {
+  /** The WebSocket close code: 4000 is the plugin's own missed heartbeat, 1006 a lost connection. */
+  code: number;
+  /**
+   * `server` when this relay closed the socket (its heartbeat timeout), `lost` when no close frame
+   * arrived at all (1006), and `plugin` for any other close the plugin's end sent.
+   */
+  closedBy: 'server' | 'plugin' | 'lost';
+  /** The close reason text, such as "heartbeat timeout"; null when the close carried none. */
+  detail: string | null;
+}
+
 export interface Session {
   id: string;
   socket: WebSocket | null;
@@ -18,6 +31,12 @@ export interface Session {
   pageName: string | null;
   heartbeat: HeartbeatMonitor | null;
   disconnectTimer: ReturnType<typeof setTimeout> | null;
+  /**
+   * When the socket dropped and why; null while connected. Read by `list_files`'s reconnecting
+   * list.
+   */
+  disconnectedAt: number | null;
+  disconnectReason: DisconnectReason | null;
   /**
    * Whether this session has already been told, in full, that its plugin predates the server. The
    * explanation is ~120 tokens and the answer cannot change while the session lives, so every call
@@ -72,6 +91,8 @@ export class SessionManager {
       pageName: existing?.pageName ?? null,
       heartbeat: null,
       disconnectTimer: null,
+      disconnectedAt: null,
+      disconnectReason: null,
       // A reconnect of the same session keeps it: the plugin on the other end has not changed, so
       // re-explaining would be the repetition this avoids. A genuinely new plugin gets a new id.
       skewExplained: existing?.skewExplained ?? false,
@@ -81,12 +102,14 @@ export class SessionManager {
     return { session, resumed };
   }
 
-  markDisconnected(session: Session, graceMs: number): void {
+  markDisconnected(session: Session, graceMs: number, reason: DisconnectReason): void {
     const current = this.sessions.get(session.id);
     if (current !== session) return;
     if (session.disconnectTimer !== null) clearTimeout(session.disconnectTimer);
     session.state = 'disconnected';
     session.socket = null;
+    session.disconnectedAt = Date.now();
+    session.disconnectReason = reason;
     session.heartbeat?.stop();
     session.heartbeat = null;
     session.disconnectTimer = setTimeout(() => {
@@ -132,6 +155,14 @@ export class SessionManager {
 
   connected(): readonly Session[] {
     return this.list().filter(s => s.state === 'connected' && s.socket !== null);
+  }
+
+  /**
+   * Sessions inside their grace window: dropped, kept for a resume, and reachable by nothing. A
+   * session the plugin ended, or whose grace ran out, has already left the map.
+   */
+  reconnecting(): readonly Session[] {
+    return this.list().filter(s => s.state === 'disconnected');
   }
 
   clear(): void {
