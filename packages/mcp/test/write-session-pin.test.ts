@@ -230,6 +230,20 @@ describe('follower write session pin', () => {
     expect(h.pingCount()).toBe(1);
   });
 
+  it('says the write outcome is unknown and names its tool, session and requestId', async () => {
+    const h = harness();
+    h.dropReplies(3);
+    const call = dispatchTool(h.ctx, 'rename_node', write).catch(e => e);
+    await h.retry;
+    await vi.advanceTimersByTimeAsync(3_000);
+    const { message } = (await call) as Error;
+    expect(message).toMatch(/^follower rpc transport: fetch failed/);
+    expect(message).toContain('outcome unknown, read back before retrying');
+    expect(message).toContain('rename_node');
+    expect(message).toContain('session-a');
+    expect(message).toContain('logical-write');
+  });
+
   it('leaves leader-direct writes on the active session without resolving or retrying', async () => {
     const h = harness();
     h.first.activate('session-b');
