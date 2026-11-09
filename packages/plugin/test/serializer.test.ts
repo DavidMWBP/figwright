@@ -1,6 +1,7 @@
 import { MIXED, type SerializedNode } from '@figwright/shared';
 import { describe, expect, it, vi } from 'vitest';
 
+import { withInstanceIdLookup } from '../src/node-lookup.js';
 import {
   serializeEffect,
   serializeFlat,
@@ -11,6 +12,7 @@ import {
   serializePaint,
   serializeTrees,
 } from '../src/serializer.js';
+import { CONNECTION_ERROR } from './read-retry-fake.js';
 
 const serializeTree = async (node: SceneNode): Promise<SerializedNode> =>
   (await serializeTrees([node])).nodes[0]!;
@@ -1753,15 +1755,103 @@ describe('serializeFlat (async) — mainComponent', () => {
     });
   });
 
-  it('omits mainComponent for non-instances and when resolution fails', async () => {
-    expect((await serializeFlat(fake({ type: 'FRAME' }))).mainComponent).toBeUndefined();
-    const broken = fake({
-      type: 'INSTANCE',
-      getMainComponentAsync: async () => {
+  it('omits component metadata for non-instances', async () => {
+    const out = await serializeFlat(fake({ type: 'FRAME' }));
+    expect(out.mainComponent).toBeUndefined();
+    expect(out.mainComponentUnavailable).toBeUndefined();
+  });
+
+  it.each([false, true])(
+    'marks a failed lookup without losing geometry or retrying other errors (context: %s)',
+    async hasContext => {
+      const lookup = vi.fn<() => Promise<never>>(async () => {
         throw new Error('not loaded');
-      },
-    });
-    expect((await serializeFlat(broken)).mainComponent).toBeUndefined();
+      });
+      const broken = fake({
+        type: 'INSTANCE',
+        getMainComponentAsync: lookup,
+      });
+      const out = await serializeFlat(
+        broken,
+        hasContext ? withInstanceIdLookup({} as typeof figma) : undefined,
+      );
+      expect(out.mainComponent).toBeUndefined();
+      expect(out.mainComponentUnavailable).toEqual({
+        message: 'getMainComponentAsync(1:2) failed: not loaded',
+      });
+      expect(out).toMatchObject({ id: '1:2', x: 0, y: 0, width: 10, height: 10 });
+      expect(lookup).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('keeps a null main component distinct from an unavailable lookup', async () => {
+    const lookup = vi.fn<() => Promise<null>>(async () => null);
+    const out = await serializeFlat(
+      fake({ type: 'INSTANCE', getMainComponentAsync: lookup }),
+      withInstanceIdLookup({} as typeof figma),
+    );
+    expect(out.mainComponent).toBeUndefined();
+    expect(out.mainComponentUnavailable).toBeUndefined();
+    expect(lookup).toHaveBeenCalledOnce();
+  });
+
+  it('marks two failed attempts with the instance target', async () => {
+    vi.useFakeTimers();
+    try {
+      const lookup = vi.fn<() => Promise<never>>(async () => {
+        throw new Error(CONNECTION_ERROR);
+      });
+      const reading = serializeFlat(
+        fake({ type: 'INSTANCE', getMainComponentAsync: lookup }),
+        withInstanceIdLookup({} as typeof figma),
+      );
+      await vi.runAllTimersAsync();
+      const out = await reading;
+      expect(out.mainComponent).toBeUndefined();
+      expect(out.mainComponentUnavailable?.message).toBe(
+        `getMainComponentAsync(1:2) failed: ${CONNECTION_ERROR} Read failed twice.`,
+      );
+      expect(lookup).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('retries at most three instances across simultaneous serialization runs sharing an invocation', async () => {
+    vi.useFakeTimers();
+    try {
+      const ctx = withInstanceIdLookup({} as typeof figma);
+      const lookups = Array.from({ length: 5 }, (_, i) =>
+        vi
+          .fn<() => Promise<unknown>>()
+          .mockRejectedValueOnce(new Error(CONNECTION_ERROR))
+          .mockResolvedValue({ id: `main:${i}`, name: 'Button', key: `key:${i}` }),
+      );
+      const nodes = lookups.map((lookup, i) =>
+        fake({ id: `instance:${i}`, type: 'INSTANCE', getMainComponentAsync: lookup }),
+      );
+      const reading = Promise.all([
+        serializeFlatNodes(nodes.slice(0, 2), null, ctx),
+        serializeTrees(nodes.slice(2), null, ctx),
+      ]);
+      await vi.runAllTimersAsync();
+      const out = (await reading).flatMap(run => run.nodes);
+      expect(lookups.map(lookup => lookup.mock.calls.length)).toEqual([2, 2, 2, 1, 1]);
+      expect(out.slice(0, 3).map(node => node.mainComponent?.id)).toEqual([
+        'main:0',
+        'main:1',
+        'main:2',
+      ]);
+      expect(out.slice(0, 3).every(node => node.mainComponentUnavailable === undefined)).toBe(true);
+      expect(out.slice(3).map(node => node.mainComponentUnavailable?.message)).toEqual(
+        [3, 4].map(
+          i =>
+            `getMainComponentAsync(instance:${i}) failed: ${CONNECTION_ERROR} Retry cap reached (3 per tool call).`,
+        ),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

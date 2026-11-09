@@ -1,4 +1,5 @@
 import { figmaCall } from '../figma-call.js';
+import { retryRead } from '../read-retry.js';
 import {
   type BindingSnapshot,
   captureBindings,
@@ -249,7 +250,9 @@ const guardFor = async (figmaCtx: typeof figma, inst: InstanceNode): Promise<Ins
   const nested = inst.findAllWithCriteria({ types: ['INSTANCE'] });
   const mains = await Promise.all(
     nested.map(async n =>
-      figmaCall('getMainComponentAsync', n.id, () => n.getMainComponentAsync()),
+      figmaCall('getMainComponentAsync', n.id, () =>
+        retryRead(figmaCtx, () => n.getMainComponentAsync()),
+      ),
     ),
   );
   const swaps = nested.flatMap((n, i) => {

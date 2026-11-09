@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { DesignContextNodeSchema } from '../src/design-context.js';
 import {
   GetDocumentResultSchema,
   GetSelectionResultSchema,
@@ -23,6 +24,19 @@ const baseInput = (overrides: Partial<SceneNodeLike> = {}): SceneNodeLike => ({
   height: 50,
   parent: { id: '1:1' },
   ...overrides,
+});
+
+it('preserves unavailable main-component metadata through both read schemas', () => {
+  const node = {
+    ...serializeNode(baseInput({ type: 'INSTANCE' })),
+    mainComponentUnavailable: { message: 'getMainComponentAsync(1:2) failed: unavailable' },
+  };
+  expect(SerializedNodeSchema.parse(node)).toEqual(node);
+  expect(DesignContextNodeSchema.parse(node)).toMatchObject({
+    mainComponentUnavailable: node.mainComponentUnavailable,
+    width: 100,
+    height: 50,
+  });
 });
 
 describe('serializeNode (base-only factory)', () => {

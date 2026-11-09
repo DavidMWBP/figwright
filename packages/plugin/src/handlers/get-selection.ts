@@ -8,7 +8,7 @@ export const createGetSelectionHandler =
   async () => {
     const page = figmaCtx.currentPage;
     const selection = page.selection;
-    const run = await serializeFlatNodes(selection, resultCharBudget());
+    const run = await serializeFlatNodes(selection, resultCharBudget(), figmaCtx);
     // Refused rather than cut: the selection is the caller's statement of what to work on, and a
     // part of it would read as all of it.
     if (!run.complete) {

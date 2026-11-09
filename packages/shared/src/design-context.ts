@@ -15,6 +15,7 @@ import {
   SerializedLetterSpacingSchema,
   SerializedLineHeightSchema,
   SerializedMainComponentSchema,
+  SerializedMainComponentUnavailableSchema,
   SerializedPaintSchema,
   SerializedStyleIdsSchema,
 } from './serialized-node.js';
@@ -30,6 +31,7 @@ import type {
   SerializedLetterSpacing,
   SerializedLineHeight,
   SerializedMainComponent,
+  SerializedMainComponentUnavailable,
   SerializedPaint,
   SerializedStyleIds,
 } from './serialized-node.js';
@@ -261,6 +263,7 @@ export interface DesignContextNode {
    */
   motion?: MotionSummary;
   mainComponent?: SerializedMainComponent;
+  mainComponentUnavailable?: SerializedMainComponentUnavailable;
   mainComponentId?: string;
   /**
    * GlobalVars refs (P3): when style dedup runs (full detail), inline `fills` / `strokes` /
@@ -447,6 +450,7 @@ export const DesignContextNodeSchema = z.lazy(() =>
       })
       .optional(),
     mainComponent: SerializedMainComponentSchema.optional(),
+    mainComponentUnavailable: SerializedMainComponentUnavailableSchema.optional(),
     mainComponentId: z.string().optional(),
     fill: z.string().optional(),
     stroke: z.string().optional(),

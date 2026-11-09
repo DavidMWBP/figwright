@@ -395,6 +395,12 @@ export const SerializedMainComponentSchema = z.object({
 });
 export type SerializedMainComponent = z.infer<typeof SerializedMainComponentSchema>;
 
+/** An INSTANCE whose main-component lookup rejected; its other serialized fields remain usable. */
+export const SerializedMainComponentUnavailableSchema = z.object({ message: z.string() });
+export type SerializedMainComponentUnavailable = z.infer<
+  typeof SerializedMainComponentUnavailableSchema
+>;
+
 /** A hyperlink target on a text run or node: a URL, or an in-file NODE link (`value` is the id). */
 export const SerializedHyperlinkSchema = z.object({
   type: z.string(),
@@ -551,6 +557,7 @@ export interface SerializedNode {
   // instance variant / props + which component it instantiates
   componentProperties?: Readonly<Record<string, SerializedComponentProperty>>;
   mainComponent?: SerializedMainComponent;
+  mainComponentUnavailable?: SerializedMainComponentUnavailable;
   /**
    * Which component property drives this layer — present only on a sublayer inside a COMPONENT or
    * an INSTANCE, keyed by the field the property controls. The value is the property name carrying
@@ -674,6 +681,7 @@ export const SerializedNodeSchema = z.lazy(() =>
     explicitVariableModes: z.record(z.string(), z.string()).optional(),
     componentProperties: z.record(z.string(), SerializedComponentPropertySchema).optional(),
     mainComponent: SerializedMainComponentSchema.optional(),
+    mainComponentUnavailable: SerializedMainComponentUnavailableSchema.optional(),
     componentPropertyReferences: z
       .object({
         visible: z.string().optional(),

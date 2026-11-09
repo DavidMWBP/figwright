@@ -28,7 +28,7 @@ export const createGetNodesInfoHandler =
           return null;
         }
         if (node === null || !isSceneNode(node)) return null;
-        return { id, run: await serializeTrees([node], budget) };
+        return { id, run: await serializeTrees([node], budget, figmaCtx) };
       }),
     );
     failures.sort((a, b) => a.index - b.index);

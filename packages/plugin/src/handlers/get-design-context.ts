@@ -17,6 +17,7 @@ import {
 
 import type { SandboxToolHandler } from '../dispatcher.js';
 import { figmaCall } from '../figma-call.js';
+import { retryRead } from '../read-retry.js';
 import { serializeCodeSyntax, serializeFlatSync } from '../serializer.js';
 
 const isSceneNode = (node: BaseNode): node is SceneNode =>
@@ -468,6 +469,7 @@ const breakpointHint = (roots: readonly SceneNode[]): string | undefined => {
 };
 
 interface BuildCtx {
+  figmaCtx: typeof figma;
   detail: DetailLevel;
   dedupe: boolean;
   seen: Set<string>;
@@ -640,7 +642,7 @@ const buildNode = async (
   // dedup — only the expanded child subtree below is collapsed.
   if (node.type === 'INSTANCE' && (ctx.dedupe || ctx.detail === 'full')) {
     const main = await figmaCall('getMainComponentAsync', node.id, () =>
-      (node as InstanceNode).getMainComponentAsync(),
+      retryRead(ctx.figmaCtx, () => (node as InstanceNode).getMainComponentAsync()),
     );
     if (main !== null) {
       out.mainComponentId = main.id;
@@ -793,6 +795,7 @@ export const createGetDesignContextHandler =
     // depth omitted or 0 → unlimited (-1); positive → that many levels of children.
     const remainingDepth = typeof p.depth === 'number' && p.depth > 0 ? p.depth : -1;
     const ctx: BuildCtx = {
+      figmaCtx,
       detail: isDetailLevel(p.detail) ? p.detail : 'compact',
       dedupe: p.dedupeComponents === true,
       seen: new Set<string>(),

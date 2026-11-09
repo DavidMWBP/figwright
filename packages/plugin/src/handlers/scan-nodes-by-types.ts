@@ -17,5 +17,8 @@ export const createScanNodesByTypesHandler =
     const scope = await resolveScope(figmaCtx, p.root);
 
     const matches = await collectMatches(scope, node => types.has(node.type));
-    return toNodeListResult(matches, await serializeFlatNodes(matches, resultCharBudget()));
+    return toNodeListResult(
+      matches,
+      await serializeFlatNodes(matches, resultCharBudget(), figmaCtx),
+    );
   };
