@@ -1,5 +1,6 @@
 import { TimeSlice } from './cooperative.js';
 import { probeLoadedPage } from './node-lookup.js';
+import { readNode } from './node-read.js';
 import { isPageLoadConnectionTimeout, loadPage } from './page-lookup.js';
 
 const isSceneNode = (node: BaseNode): node is SceneNode =>
@@ -76,7 +77,7 @@ export const flattenForest = async (roots: readonly SceneNode[]): Promise<FlatFo
     const index = forest.nodes.length;
     forest.nodes.push(node);
     forest.parents.push(parent);
-    const children = childrenOf(node);
+    const children = readNode(node, 'children', () => childrenOf(node));
     forest.hasChildren.push(children !== null);
     if (children !== null) {
       for (let i = children.length - 1; i >= 0; i -= 1) {

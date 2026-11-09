@@ -1726,6 +1726,21 @@ describe('serializeTree', () => {
 });
 
 describe('serializeFlat (async) — mainComponent', () => {
+  it('names the instance and main component stage for a callback failure without retrying', async () => {
+    const lookup = vi.fn<() => Promise<never>>(async () => {
+      throw new Error('Attempted to invoke callback with invalid id');
+    });
+    const out = await serializeFlat(
+      fake({ type: 'INSTANCE', name: 'Broken instance', getMainComponentAsync: lookup }),
+    );
+    expect(out).toMatchObject({ id: '1:2', width: 10 });
+    expect(out.mainComponentUnavailable?.message).toContain(
+      'getMainComponentAsync(1:2) failed: Attempted to invoke callback with invalid id',
+    );
+    expect(out.mainComponentUnavailable?.message).toContain('Broken instance');
+    expect(out.mainComponentUnavailable?.message).toContain('read stage: main component');
+    expect(lookup).toHaveBeenCalledOnce();
+  });
   it('resolves the main component for an INSTANCE via getMainComponentAsync', async () => {
     const node = fake({
       type: 'INSTANCE',
@@ -1777,7 +1792,7 @@ describe('serializeFlat (async) — mainComponent', () => {
       );
       expect(out.mainComponent).toBeUndefined();
       expect(out.mainComponentUnavailable).toEqual({
-        message: 'getMainComponentAsync(1:2) failed: not loaded',
+        message: expect.stringContaining('getMainComponentAsync(1:2) failed: not loaded'),
       });
       expect(out).toMatchObject({ id: '1:2', x: 0, y: 0, width: 10, height: 10 });
       expect(lookup).toHaveBeenCalledOnce();
@@ -1808,7 +1823,7 @@ describe('serializeFlat (async) — mainComponent', () => {
       await vi.runAllTimersAsync();
       const out = await reading;
       expect(out.mainComponent).toBeUndefined();
-      expect(out.mainComponentUnavailable?.message).toBe(
+      expect(out.mainComponentUnavailable?.message).toContain(
         `getMainComponentAsync(1:2) failed: ${CONNECTION_ERROR} Read failed twice.`,
       );
       expect(lookup).toHaveBeenCalledTimes(2);
@@ -1844,9 +1859,10 @@ describe('serializeFlat (async) — mainComponent', () => {
       ]);
       expect(out.slice(0, 3).every(node => node.mainComponentUnavailable === undefined)).toBe(true);
       expect(out.slice(3).map(node => node.mainComponentUnavailable?.message)).toEqual(
-        [3, 4].map(
-          i =>
+        [3, 4].map(i =>
+          expect.stringContaining(
             `getMainComponentAsync(instance:${i}) failed: ${CONNECTION_ERROR} Retry cap reached (3 per tool call).`,
+          ),
         ),
       );
     } finally {

@@ -1,6 +1,7 @@
 import type { GetNodeResult, SerializedNode } from '@figwright/shared';
 
 import type { SandboxToolHandler } from '../dispatcher.js';
+import { NodeReadError, readNode } from '../node-read.js';
 import { resultCharBudget, serializeTrees, treeTooLargeError } from '../serializer.js';
 
 const isSceneNode = (node: BaseNode): node is SceneNode =>
@@ -23,8 +24,17 @@ export const createGetNodeHandler =
       throw new TypeError('get_node: nodeId must be a string');
     }
     const node = await figmaCtx.getNodeByIdAsync(nodeId);
-    const result: GetNodeResult = {
-      node: node !== null && isSceneNode(node) ? await serializeWithin(node, figmaCtx) : null,
-    };
-    return result;
+    try {
+      const scene =
+        node === null
+          ? null
+          : readNode(node, 'native fields', () => (isSceneNode(node) ? node : null));
+      const result: GetNodeResult = {
+        node: scene === null ? null : await serializeWithin(scene, figmaCtx),
+      };
+      return result;
+    } catch (error) {
+      if (error instanceof NodeReadError) throw await error.advise(figmaCtx);
+      throw error;
+    }
   };

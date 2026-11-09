@@ -26,6 +26,80 @@ const fakeFigma = (lookup: Record<string, BaseNode | null>): typeof figma =>
   }) as unknown as typeof figma;
 
 describe('get_node handler', () => {
+  it.each(['width', 'children'] as const)(
+    'attributes a failing %s read and preserves its cause without retrying',
+    async field => {
+      const cause = new Error('Attempted to invoke callback with invalid id');
+      const node = fake({ type: 'FRAME', name: 'Broken' });
+      const getter = vi.fn<() => never>(() => {
+        throw cause;
+      });
+      Object.defineProperty(node, field, { get: getter });
+      const lookup = vi.fn<(id: string) => Promise<BaseNode | null>>(async id =>
+        id === '0:1' ? ({ id } as BaseNode) : node,
+      );
+      const handler = createSandboxHandlers({
+        currentPage: { id: '0:1' },
+        getNodeByIdAsync: lookup,
+      } as unknown as typeof figma).get_node!;
+      const error = await Promise.resolve(handler({ nodeId: '1:2' })).catch(failure => failure);
+      expect(error).toBeInstanceOf(Error);
+      if (!(error instanceof Error)) throw new Error('Expected a rejected Error');
+      expect(error.cause).toBe(cause);
+      expect(error.message).toContain(
+        'serializeNode(1:2) failed: Attempted to invoke callback with invalid id',
+      );
+      expect(error.message).toContain(
+        `read stage: ${field === 'children' ? 'children' : 'native fields'}`,
+      );
+      expect(error.message).toContain('Broken');
+      expect(error.message).toContain('current page still answers');
+      expect(lookup.mock.calls).toEqual([['1:2'], ['0:1']]);
+      expect(getter).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('keeps the native failure when the node name is unreadable', async () => {
+    const cause = new Error('name unavailable');
+    const node = fake();
+    Object.defineProperty(node, 'name', {
+      get: () => {
+        throw cause;
+      },
+    });
+    await expect(
+      createGetNodeHandler(fakeFigma({ '1:2': node }))({ nodeId: '1:2' }),
+    ).rejects.toMatchObject({
+      cause,
+      message: expect.stringContaining('serializeNode(1:2) failed: name unavailable'),
+      nodeId: '1:2',
+      stage: 'native fields',
+    });
+  });
+
+  it('reports a failed page probe and refreshes it on the next serialization invocation', async () => {
+    const node = fake();
+    Object.defineProperty(node, 'width', {
+      get: () => {
+        throw new Error('native read rejected');
+      },
+    });
+    const lookup = vi.fn<(id: string) => Promise<BaseNode | null>>(async id => {
+      if (id === '0:1') throw new Error('health rejected');
+      return node;
+    });
+    const handler = createSandboxHandlers({
+      currentPage: { id: '0:1' },
+      getNodeByIdAsync: lookup,
+    } as unknown as typeof figma).get_node!;
+    for (let i = 0; i < 2; i++) {
+      await expect(handler({ nodeId: '1:2' })).rejects.toThrow(
+        'loaded-page health probe failed too',
+      );
+    }
+    expect(lookup.mock.calls).toEqual([['1:2'], ['0:1'], ['1:2'], ['0:1']]);
+  });
+
   it('keeps a rejected target as an error and probes again on the next tool call', async () => {
     const lookup = vi.fn<(id: string) => Promise<BaseNode | null>>(async id => {
       if (id === '0:1') return { id } as BaseNode;

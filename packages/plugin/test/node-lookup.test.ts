@@ -155,6 +155,33 @@ describe('a healthy by-id lookup is used as is', () => {
 });
 
 describe('lookup rejection context', () => {
+  it('does not retry a callback lookup rejection and preserves its cause', async () => {
+    vi.useFakeTimers();
+    try {
+      const cause = new Error('Attempted to invoke callback with invalid id');
+      const lookup = vi.fn<(id: string) => Promise<BaseNode | null>>(async id => {
+        if (id === '0:1') return null;
+        throw cause;
+      });
+      const reading = withInstanceIdLookup({
+        currentPage: { id: '0:1' },
+        getNodeByIdAsync: lookup,
+      } as unknown as typeof figma)
+        .getNodeByIdAsync('1:2')
+        .catch(error => error);
+      await vi.runAllTimersAsync();
+      expect(await reading).toMatchObject({
+        cause,
+        message: expect.stringContaining(
+          'getNodeByIdAsync(1:2) failed: Attempted to invoke callback with invalid id',
+        ),
+      });
+      expect(lookup.mock.calls).toEqual([['1:2'], ['0:1']]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('shares page and node probes within an invocation and refreshes the next invocation', async () => {
     vi.useFakeTimers();
     try {

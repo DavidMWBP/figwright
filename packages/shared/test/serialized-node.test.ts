@@ -220,6 +220,30 @@ describe('GetSelectionResult / GetDocumentResult schemas', () => {
 });
 
 describe('GetNode / GetNodesInfo / GetMetadata / GetPages schemas', () => {
+  it('preserves indexed serialization stages separately from lookup errors', async () => {
+    const { GetNodesInfoResultSchema } = await import('../src/serialized-node.js');
+    const payload = {
+      nodes: [null, null],
+      lookupErrors: [{ index: 0, nodeId: '1:2', message: 'lookup rejected' }],
+      serializationErrors: [
+        { index: 1, nodeId: '1:4', stage: 'children', message: 'child read rejected' },
+      ],
+    };
+    expect(GetNodesInfoResultSchema.parse(payload)).toEqual(payload);
+    expect(
+      GetNodesInfoResultSchema.safeParse({
+        ...payload,
+        serializationErrors: [{ index: -1, nodeId: '1:4', stage: 'children', message: 'failed' }],
+      }).success,
+    ).toBe(false);
+    expect(
+      GetNodesInfoResultSchema.safeParse({
+        ...payload,
+        serializationErrors: [{ index: 1, nodeId: '1:4', message: 'failed' }],
+      }).success,
+    ).toBe(false);
+  });
+
   it('GetNodeResult accepts a node or null', async () => {
     const { GetNodeResultSchema } = await import('../src/serialized-node.js');
     expect(GetNodeResultSchema.parse({ node: serializeNode(baseInput()) }).node).not.toBeNull();

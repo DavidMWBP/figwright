@@ -55,7 +55,161 @@ const fakeFigma = (lookup: Record<string, BaseNode | null>): typeof figma =>
     getNodeByIdAsync: async (id: string) => lookup[id] ?? null,
   }) as unknown as typeof figma;
 
+const brokenNode = (id: string): SceneNode => {
+  const node = fake({ id, name: 'Broken' });
+  Object.defineProperty(node, 'width', {
+    get: () => {
+      throw new Error('Attempted to invoke callback with invalid id');
+    },
+  });
+  return node;
+};
+
 describe('get_nodes_info handler', () => {
+  it('keeps other nodes when one node fails to serialize', async () => {
+    const child = fake({ id: '1:5', name: 'Child' });
+    const good = fake({ id: '1:4', type: 'FRAME', children: [child] });
+    const handler = createGetNodesInfoHandler(fakeFigma({ '1:2': brokenNode('1:2'), '1:4': good }));
+    const reading = Promise.resolve(handler({ nodeIds: ['1:4', '1:2', '1:4'] }));
+    await expect(reading).resolves.toMatchObject({
+      nodes: [
+        { id: '1:4', children: [{ id: '1:5', name: 'Child', width: 10 }] },
+        null,
+        { id: '1:4', children: [{ id: '1:5', name: 'Child', width: 10 }] },
+      ],
+      serializationErrors: [
+        {
+          index: 1,
+          nodeId: '1:2',
+          stage: 'native fields',
+          message: expect.stringContaining('Attempted to invoke callback with invalid id'),
+        },
+      ],
+    });
+    expect(((await reading) as GetNodesInfoResult).lookupErrors).toBeUndefined();
+  });
+
+  it('reports every slot when every node fails serialization', async () => {
+    const handler = createGetNodesInfoHandler(
+      fakeFigma({ '1:2': brokenNode('1:2'), '1:3': brokenNode('1:3') }),
+    );
+    await expect(handler({ nodeIds: ['1:2', '1:3'] })).resolves.toMatchObject({
+      nodes: [null, null],
+      serializationErrors: [
+        { index: 0, nodeId: '1:2', stage: 'native fields' },
+        { index: 1, nodeId: '1:3', stage: 'native fields' },
+      ],
+    });
+  });
+
+  it('distinguishes serialization and lookup failures and shares one health probe', async () => {
+    const lookup = vi.fn<(id: string) => Promise<BaseNode | null>>(async id => {
+      if (id === '0:1') return { id, type: 'PAGE' } as BaseNode;
+      if (id === '1:2') return brokenNode(id);
+      throw new Error('lookup rejected');
+    });
+    const result = await createSandboxHandlers({
+      currentPage: { id: '0:1' },
+      getNodeByIdAsync: lookup,
+    } as unknown as typeof figma).get_nodes_info!({ nodeIds: ['1:2', '8:8'] });
+    await expect(Promise.resolve(result)).resolves.toMatchObject({
+      nodes: [null, null],
+      lookupErrors: [
+        {
+          index: 1,
+          nodeId: '8:8',
+          message: expect.stringContaining('session answered other reads'),
+        },
+      ],
+      serializationErrors: [
+        {
+          index: 0,
+          nodeId: '1:2',
+          stage: 'native fields',
+          message: expect.stringContaining('current page still answers'),
+        },
+      ],
+    });
+    expect(lookup.mock.calls).toHaveLength(3);
+    expect(lookup.mock.calls.filter(([id]) => id === '0:1')).toHaveLength(1);
+  });
+
+  it('reports both serialization failures for a duplicated id without retrying', async () => {
+    const lookup = vi.fn<(id: string) => Promise<BaseNode | null>>(async id =>
+      id === '0:1' ? ({ id, type: 'PAGE' } as BaseNode) : brokenNode(id),
+    );
+    const handler = createSandboxHandlers({
+      currentPage: { id: '0:1' },
+      getNodeByIdAsync: lookup,
+    } as unknown as typeof figma).get_nodes_info!;
+    await expect(handler({ nodeIds: ['1:2', '1:2'] })).resolves.toMatchObject({
+      nodes: [null, null],
+      serializationErrors: [
+        { index: 0, nodeId: '1:2' },
+        { index: 1, nodeId: '1:2' },
+      ],
+    });
+    expect(lookup.mock.calls).toEqual([['1:2'], ['1:2'], ['0:1']]);
+  });
+
+  it('names the failing deep child while indexing the requested tree', async () => {
+    const root = fake({
+      id: '1:2',
+      type: 'FRAME',
+      children: [fake({ id: '1:3', type: 'FRAME', children: [brokenNode('1:4')] })],
+    });
+    await expect(
+      createGetNodesInfoHandler(fakeFigma({ '1:2': root }))({ nodeIds: ['1:2'] }),
+    ).resolves.toMatchObject({
+      nodes: [null],
+      serializationErrors: [
+        {
+          index: 0,
+          nodeId: '1:4',
+          stage: 'native fields',
+          message: expect.stringContaining('Broken'),
+        },
+      ],
+    });
+  });
+
+  it('attributes a deep child failure while encoding serialized fields', async () => {
+    const dash = [4];
+    let reads = 0;
+    Object.defineProperty(dash, 0, {
+      get: () => {
+        reads += 1;
+        if (reads > 1) throw new Error('native dash unavailable');
+        return 4;
+      },
+    });
+    const root = fake({
+      type: 'FRAME',
+      children: [
+        fake({
+          id: '1:3',
+          strokes: [{ type: 'SOLID', color: { r: 0, g: 0, b: 0 } }],
+          dashPattern: dash,
+        }),
+      ],
+    });
+    await expect(
+      createGetNodesInfoHandler(fakeFigma({ '1:2': root, '1:4': fake({ id: '1:4' }) }))({
+        nodeIds: ['1:2', '1:4'],
+      }),
+    ).resolves.toMatchObject({
+      nodes: [null, { id: '1:4', width: 10 }],
+      serializationErrors: [
+        {
+          index: 0,
+          nodeId: '1:3',
+          stage: 'serialized fields',
+          message: expect.stringContaining('native dash unavailable'),
+        },
+      ],
+    });
+  });
+
   it.each([
     ['1:2', '8:8', '1:4'],
     ['8:8', '8:9', '8:8'],
@@ -151,7 +305,12 @@ describe('get_nodes_info handler', () => {
   });
 
   it('returns the existing empty result for no ids', async () => {
-    expect(await rejectingHandler()({ nodeIds: [] })).toEqual({ nodes: [] });
+    const lookup = vi.fn<(id: string) => Promise<BaseNode | null>>();
+    const handler = createSandboxHandlers({
+      getNodeByIdAsync: lookup,
+    } as unknown as typeof figma).get_nodes_info!;
+    expect(await handler({ nodeIds: [] })).toEqual({ nodes: [] });
+    expect(lookup).not.toHaveBeenCalled();
   });
   it('throws when nodeIds is not a string[]', async () => {
     const handler = createGetNodesInfoHandler(fakeFigma({}));
@@ -199,6 +358,29 @@ describe('get_nodes_info handler', () => {
     const result = (await handler({ nodeIds: ['1:2', '1:9'] })) as GetNodesInfoResult;
     expect(result.nodes.map(n => n?.id)).toEqual(['1:2', '1:9']);
     expect(result.nodes[0]?.children).toHaveLength(6);
+  });
+
+  it('does not charge discarded serialization to the successful trees budget', async () => {
+    const broken = fake({
+      id: '1:3',
+      type: 'FRAME',
+      children: [
+        ...Array.from({ length: 512 }, (_, i) =>
+          fake({ id: `failed:${i}`, name: 'x'.repeat(9000) }),
+        ),
+        brokenNode('1:5'),
+      ],
+    });
+    const handler = createGetNodesInfoHandler(
+      fakeFigma({ '1:2': wideFrame('1:2'), '1:3': broken }),
+    );
+    await expect(handler({ nodeIds: ['1:3', '1:2'] })).resolves.toMatchObject({
+      nodes: [
+        null,
+        { id: '1:2', children: Array.from({ length: 6 }, (_, i) => ({ id: `1:2-${i}` })) },
+      ],
+      serializationErrors: [{ index: 0, nodeId: '1:5', stage: 'native fields' }],
+    });
   });
 
   it('refuses trees that fit one at a time but not together, naming each', async () => {
