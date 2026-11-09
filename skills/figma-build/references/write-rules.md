@@ -91,7 +91,7 @@ imported into this file — a library item's key, or its id in the library file,
    `import_style({ styleKey })` each token you will use, then bind or apply the `variableId` / `styleId`
    it returns — never the library file's own id.
 4. Import before any `batch`: an import cannot be rolled back, so `batch` refuses it. If an import times
-   out while the file sits in a background tab, bring it to the front and retry.
+   out while the file sits in a background tab, bring it to the front, read the variable or style back (`get_variable_defs` / `get_styles`), and retry only if it did not land.
 
 Library components need no import step: `create_instance` takes their `componentKey`, which
 `get_local_components` in the library file reports.
@@ -171,3 +171,7 @@ per paragraph, so to vary it within one node use `set_text_range` with a range i
 you mean — that range selects the paragraph, not the characters. A text style can carry it too
 (`create_text_style` / `update_text_style`), which is the right home when every node bound to
 "Heading/H1" should balance.
+
+## A write whose outcome is unknown
+
+When a write's reply is lost in transport, the error reads `outcome unknown, read back before retrying: <tool> request <id> was sent to session <id>`, after the network cause. The write may already have applied. Read its target back first (`get_node`, `get_variable_defs`, `get_styles`, or the list the write touched) and send it again only if the change is missing. Do not assume a retry is a no-op: a rejected write is not replayed from the plugin's cache.
