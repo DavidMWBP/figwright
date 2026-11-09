@@ -1,7 +1,7 @@
 import type { ListFilesResult } from '@figwright/shared';
 import { z } from 'zod';
 
-import { BUILD_ID, describeBuild } from '../build-id.js';
+import { describeBuild } from '../build-id.js';
 import type { DisconnectReason } from '../relay/session.js';
 import type { PluginSessionInfo, ReconnectingSessionInfo } from '../routing/sessions.js';
 import { getFileTarget } from '../routing/target.js';
@@ -16,6 +16,9 @@ export const listFilesTool: ToolSpec = {
     '[{ sessionId, fileName, currentPage, pluginVersion, pluginBuild, routed, bound, duplicateName?, ' +
     'error? }] }. serverBuild and pluginBuild name the exact build (epoch ms with its UTC time; ' +
     '"unknown" for a plugin too old to send one), since builds of one release share a version. ' +
+    'serverBuild is the build of the Figwright server process that holds the plugin connections ' +
+    'and runs the calls, which may not be the one you are talking to; "unknown" when that ' +
+    'process could not be reached or is too old to report it. ' +
     'More than one ' +
     'entry means more than one file is reachable, and calls follow whichever one the user last ' +
     'touched (routed: true) — which changes under you when they switch tabs. Claim one with ' +
@@ -164,8 +167,11 @@ export const handleListFiles = async (
   dispatch: SessionDispatch,
   reconnectingSessions: readonly ReconnectingSessionInfo[] = [],
   leaderUnreachable?: string,
-  /** The build stamp of the server answering: this process's own. */
-  serverBuildId: number = BUILD_ID,
+  /**
+   * Build stamp of the leader that holds the sessions and runs the calls; undefined ("unknown")
+   * when it could not be read or predates build ids. Never a follower's own.
+   */
+  serverBuildId?: number,
 ): Promise<{
   serverBuild: string;
   files: ConnectedFile[];
