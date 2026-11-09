@@ -337,13 +337,18 @@ export class Relay {
     return this.sessions
       .connected()
       .toSorted((a, b) => b.lastActivityAt - a.lastActivityAt)
-      .map(s => ({
-        id: s.id,
-        fileName: s.fileName,
-        pageName: s.pageName,
-        lastActivityAt: s.lastActivityAt,
-        pluginVersion: s.clientVersion,
-      }));
+      .map(s => {
+        const info: PluginSessionInfo = {
+          id: s.id,
+          fileName: s.fileName,
+          pageName: s.pageName,
+          lastActivityAt: s.lastActivityAt,
+          pluginVersion: s.clientVersion,
+        };
+        // Absent, not undefined, for a plugin older than the field: the follower reads it off JSON.
+        if (s.clientBuildId !== undefined) info.pluginBuildId = s.clientBuildId;
+        return info;
+      });
   }
 
   /**
@@ -565,6 +570,9 @@ export class Relay {
       id: env.sessionId,
       socket,
       clientVersion: parsed.data.clientVersion,
+      ...(parsed.data.clientBuildId === undefined
+        ? {}
+        : { clientBuildId: parsed.data.clientBuildId }),
     });
 
     session.heartbeat = new HeartbeatMonitor({

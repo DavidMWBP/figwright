@@ -35,6 +35,8 @@ export type WebSocketCtor = new (url: string) => WebSocket;
 export interface RelayClientOptions {
   ports: readonly number[];
   clientVersion: string;
+  /** This build's stamp (epoch ms), sent in the hello so the server can name the exact build. */
+  clientBuildId?: number;
   sessionId?: string;
   host?: string;
   WS?: WebSocketCtor;
@@ -98,7 +100,8 @@ const COLD_START_MAX_DELAY_MS = 1_000;
 
 export class RelayClient {
   readonly sessionId: string;
-  private readonly opts: Required<Omit<RelayClientOptions, 'sessionId'>>;
+  private readonly opts: Required<Omit<RelayClientOptions, 'sessionId' | 'clientBuildId'>> &
+    Pick<RelayClientOptions, 'clientBuildId'>;
   private state: RelayClientState = initialRelayState();
   private socket: WebSocket | null = null;
   private heartbeat: HeartbeatMonitor | null = null;
@@ -136,6 +139,7 @@ export class RelayClient {
     this.opts = {
       ports: opts.ports,
       clientVersion: opts.clientVersion,
+      ...(opts.clientBuildId === undefined ? {} : { clientBuildId: opts.clientBuildId }),
       host: opts.host ?? '127.0.0.1',
       WS: opts.WS ?? (globalThis as { WebSocket?: WebSocketCtor }).WebSocket!,
       log: opts.log ?? ((): void => {}),
@@ -314,6 +318,9 @@ export class RelayClient {
           clientType: 'plugin',
           clientVersion: this.opts.clientVersion,
           protocolVersion: PROTOCOL_VERSION,
+          ...(this.opts.clientBuildId === undefined
+            ? {}
+            : { clientBuildId: this.opts.clientBuildId }),
         };
         const env = createRequest({
           id: newId(),

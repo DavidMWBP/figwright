@@ -19,6 +19,8 @@ export interface PluginSessionInfo {
   pageName: string | null;
   lastActivityAt: number;
   pluginVersion: string;
+  /** The plugin's build stamp; absent for a plugin, or a leader, older than build stamps. */
+  pluginBuildId?: number;
 }
 
 /**

@@ -82,12 +82,36 @@ describe('handleListFiles', () => {
   });
 
   it('is two empty lists when no plugin is connected or reconnecting', async () => {
-    expect(await handleListFiles([], replying({}), [])).toEqual({ files: [], reconnecting: [] });
+    expect(await handleListFiles([], replying({}), [])).toEqual({
+      serverBuild: '0 (unbundled)',
+      files: [],
+      reconnecting: [],
+    });
+  });
+
+  it('names the server build and each file’s plugin build, unknown for an older plugin', async () => {
+    const result = await handleListFiles(
+      [
+        { ...session('s-1', 'Brand'), pluginBuildId: 1_762_646_400_000 },
+        session('s-2', 'Marketing'),
+      ],
+      replying({ 's-1': 'Brand', 's-2': 'Marketing' }),
+      [],
+      undefined,
+      1_762_732_800_000,
+    );
+
+    expect(result.serverBuild).toBe('1762732800000 (2025-11-10T00:00:00.000Z)');
+    expect(result.files.map(f => [f.sessionId, f.pluginBuild])).toEqual([
+      ['s-1', '1762646400000 (2025-11-09T00:00:00.000Z)'],
+      ['s-2', 'unknown'],
+    ]);
   });
 
   it('says the leader is unreachable, and why, instead of only listing nothing', async () => {
     const reason = '/ping to http://127.0.0.1:3055 failed: fetch failed';
     expect(await handleListFiles([], replying({}), [], reason)).toEqual({
+      serverBuild: '0 (unbundled)',
       files: [],
       reconnecting: [],
       leaderUnreachable: reason,

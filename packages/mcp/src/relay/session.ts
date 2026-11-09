@@ -21,6 +21,8 @@ export interface Session {
   socket: WebSocket | null;
   state: SessionState;
   clientVersion: string;
+  /** The plugin's build stamp from its `$hello`; undefined for a plugin older than the field. */
+  clientBuildId: number | undefined;
   connectedAt: number;
   reconnectedAt: number | null;
   /** Updated on every `$activity` event from this session; multi-plugin routing picks the max. */
@@ -50,7 +52,12 @@ export const DEFAULT_DISCONNECT_GRACE_MS = 30_000;
 export class SessionManager {
   private readonly sessions = new Map<string, Session>();
 
-  register(input: { id: string; socket: WebSocket; clientVersion: string }): {
+  register(input: {
+    id: string;
+    socket: WebSocket;
+    clientVersion: string;
+    clientBuildId?: number;
+  }): {
     session: Session;
     resumed: boolean;
   } {
@@ -75,6 +82,7 @@ export class SessionManager {
       socket: input.socket,
       state: 'connected',
       clientVersion: input.clientVersion,
+      clientBuildId: input.clientBuildId,
       connectedAt: existing?.connectedAt ?? now,
       reconnectedAt: existing !== undefined ? now : null,
       // A *fresh* session (new sessionId = a plugin opened in a newly-focused file) counts as the most

@@ -10,7 +10,13 @@ const { version } = pkg;
 
 export default defineConfig({
   root: 'ui',
-  define: { __APP_VERSION__: JSON.stringify(version) },
+  define: {
+    __APP_VERSION__: JSON.stringify(version),
+    // Build stamp (epoch ms), sent in the hello so ping and list_files can name the exact plugin
+    // build: every build of one release reports the same version. Same scheme as the server's
+    // __FIGWRIGHT_BUILD_ID__ (packages/mcp/tsdown.config.ts).
+    __PLUGIN_BUILD_ID__: JSON.stringify(String(Date.now())),
+  },
   plugins: [vue(), tailwindcss(), viteSingleFile()],
   build: {
     outDir: '../dist',

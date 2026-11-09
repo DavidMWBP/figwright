@@ -1,6 +1,7 @@
 import type { ListFilesResult } from '@figwright/shared';
 import { z } from 'zod';
 
+import { BUILD_ID, describeBuild } from '../build-id.js';
 import type { DisconnectReason } from '../relay/session.js';
 import type { PluginSessionInfo, ReconnectingSessionInfo } from '../routing/sessions.js';
 import { getFileTarget } from '../routing/target.js';
@@ -11,8 +12,11 @@ export const LIST_FILES_TOOL_NAME = 'list_files';
 export const listFilesTool: ToolSpec = {
   name: LIST_FILES_TOOL_NAME,
   description:
-    'Return every Figma file that currently has the Figwright plugin open, as { files: [{ sessionId, ' +
-    'fileName, currentPage, pluginVersion, routed, bound, duplicateName?, error? }] }. More than one ' +
+    'Return every Figma file that currently has the Figwright plugin open, as { serverBuild, files: ' +
+    '[{ sessionId, fileName, currentPage, pluginVersion, pluginBuild, routed, bound, duplicateName?, ' +
+    'error? }] }. serverBuild and pluginBuild name the exact build (epoch ms with its UTC time; ' +
+    '"unknown" for a plugin too old to send one), since builds of one release share a version. ' +
+    'More than one ' +
     'entry means more than one file is reachable, and calls follow whichever one the user last ' +
     'touched (routed: true) — which changes under you when they switch tabs. Claim one with ' +
     'use_file so this agent stays in it. bound marks the file this agent has claimed. ' +
@@ -46,6 +50,8 @@ export interface ConnectedFile {
   fileName: string | null;
   currentPage: { id: string; name: string } | null;
   pluginVersion: string;
+  /** The plugin's build stamp with its UTC build time; "unknown" for an older plugin. */
+  pluginBuild: string;
   /** Where an unbound call would go right now — the file the user last interacted with. */
   routed: boolean;
   /** The file this server process has claimed via use_file. */
@@ -158,7 +164,10 @@ export const handleListFiles = async (
   dispatch: SessionDispatch,
   reconnectingSessions: readonly ReconnectingSessionInfo[] = [],
   leaderUnreachable?: string,
+  /** The build stamp of the server answering: this process's own. */
+  serverBuildId: number = BUILD_ID,
 ): Promise<{
+  serverBuild: string;
   files: ConnectedFile[];
   reconnecting: ReconnectingFile[];
   leaderUnreachable?: string;
@@ -171,6 +180,7 @@ export const handleListFiles = async (
     const file: ConnectedFile = {
       sessionId: probed.session.id,
       pluginVersion: probed.session.pluginVersion,
+      pluginBuild: describeBuild(probed.session.pluginBuildId),
       routed: probed.session.id === routedId,
       bound: probed.session.id === target?.sessionId,
       fileKey: probed.fileKey,
@@ -207,7 +217,8 @@ export const handleListFiles = async (
   }));
 
   // Absent rather than undefined on the happy path, for the same reason as `error` above.
+  const serverBuild = describeBuild(serverBuildId);
   return leaderUnreachable === undefined
-    ? { files, reconnecting }
-    : { files, reconnecting, leaderUnreachable };
+    ? { serverBuild, files, reconnecting }
+    : { serverBuild, files, reconnecting, leaderUnreachable };
 };
