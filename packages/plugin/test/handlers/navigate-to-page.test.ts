@@ -1,8 +1,12 @@
-import type { MutateResult } from '@figwright/shared';
+import { getToolBudget, type MutateResult } from '@figwright/shared';
 import { describe, expect, it, vi } from 'vitest';
 
-import { createNavigateToPageHandler } from '../../src/handlers/navigate-to-page.js';
+import {
+  createNavigateToPageHandler,
+  PAGE_SWITCH_DEADLINE_MS,
+} from '../../src/handlers/navigate-to-page.js';
 import { createSandboxHandlers } from '../../src/handlers/registry.js';
+import { PAGE_LOAD_DEADLINE_MS } from '../../src/page-lookup.js';
 import { unloadedPage } from '../page-fake.js';
 import { CONNECTION_ERROR } from '../read-retry-fake.js';
 
@@ -71,6 +75,91 @@ describe('navigate_to_page handler', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('switches directly when the page load hangs past the load deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = unloadedPage();
+      const switchPage = vi
+        .mocked(f.figmaCtx.setCurrentPageAsync)
+        .mockImplementation(async page => {
+          f.figmaCtx.currentPage = page;
+        });
+      const running = Promise.resolve(
+        createSandboxHandlers(f.figmaCtx).navigate_to_page!({ pageId: f.page.id }),
+      ).catch(error => error);
+      await vi.runAllTimersAsync();
+      expect(await running).toMatchObject({
+        ok: true,
+        nodeId: 'P:2',
+        note: expect.stringMatching(/load timed out.*switched directly/i),
+      });
+      expect(switchPage).toHaveBeenCalledExactlyOnceWith(f.page);
+      expect(f.figmaCtx.currentPage).toBe(f.page);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('names both stages and the node-scoped alternative when load and switch both hang', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = unloadedPage();
+      let rejectSwitch!: (reason: Error) => void;
+      vi.mocked(f.figmaCtx.setCurrentPageAsync).mockReturnValue(
+        new Promise<void>((_, reject) => {
+          rejectSwitch = reject;
+        }),
+      );
+      const running = Promise.resolve(
+        createSandboxHandlers(f.figmaCtx).navigate_to_page!({ pageId: f.page.id }),
+      ).catch(error => error);
+      await vi.runAllTimersAsync();
+      const error = (await running) as Error;
+      expect(error).toBeInstanceOf(Error);
+      expect(error.message).toContain('page load exceeded 25 s');
+      expect(error.message).toContain('page switch exceeded 30 s');
+      expect(error.message).toMatch(/may still complete in Figma.*read the current page back/i);
+      expect(error.message).toMatch(/root.*search_nodes, scan_nodes_by_types or scan_text_nodes/);
+      expect(error.message).toContain('get_node');
+      expect(error.message).not.toMatch(/reload|by hand/i);
+      expect(error.cause).toMatchObject({
+        load: { message: expect.stringContaining('page load exceeded') },
+        switch: { message: expect.stringContaining('page switch exceeded') },
+      });
+      // A late settle of the abandoned switch must not surface as an unhandled rejection.
+      rejectSwitch(new Error('late switch failure'));
+      await vi.runAllTimersAsync();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('names the switch stage when the load succeeds and the switch hangs', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = unloadedPage();
+      f.finish();
+      vi.mocked(f.figmaCtx.setCurrentPageAsync).mockReturnValue(new Promise<void>(() => {}));
+      const running = Promise.resolve(
+        createSandboxHandlers(f.figmaCtx).navigate_to_page!({ pageId: f.page.id }),
+      ).catch(error => error);
+      await vi.runAllTimersAsync();
+      const error = (await running) as Error;
+      expect(error.message).toContain('setCurrentPageAsync(P:2) failed: page switch exceeded 30 s');
+      expect(error.message).not.toContain('page load exceeded');
+      expect(error.message).toMatch(/may still complete in Figma.*read the current page back/i);
+      expect(error.message).toContain('get_node');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('answers before the UI bridge budget even when both load and switch run to their deadlines', () => {
+    expect(PAGE_LOAD_DEADLINE_MS + PAGE_SWITCH_DEADLINE_MS).toBeLessThan(
+      getToolBudget('navigate_to_page'),
+    );
   });
 
   it.each([
