@@ -48,6 +48,8 @@ describe('tool budgets', () => {
       // A library import can wait on Figma's throttled timers in a background file.
       'import_variable',
       'import_style',
+      // A page load plus its direct-switch fallback on a very large page (failed at 30.6s).
+      'navigate_to_page',
     ]) {
       expect(getToolBudget(t)).toBe(HEAVY_TOOL_BUDGET_MS);
     }
@@ -63,6 +65,7 @@ describe('tool budgets', () => {
       'scan_nodes_by_types',
       'scan_text_nodes',
       'get_local_components',
+      'navigate_to_page',
     ]) {
       expect(getRelayBudget(t)).toBe(getToolBudget(t) + BUDGET_LAYER_MARGIN_MS);
       expect(getFollowerBudget(t)).toBe(getToolBudget(t) + 2 * BUDGET_LAYER_MARGIN_MS);

@@ -106,6 +106,16 @@ export const createToolBridge = (opts: ToolBridgeOptions = {}): ToolBridge => {
                 'The import may still complete after this timeout.',
             ),
           );
+        } else if (method === 'navigate_to_page') {
+          reject(
+            new PluginToolFailure(
+              ErrorCode.Timeout,
+              `${message}. The page load exceeded ${timeoutMs / 1000} s. ` +
+                'The switch may still complete in Figma, so read the current page back before retrying. ' +
+                'To read that page without switching to it, read by node id: pass a node id on that ' +
+                'page as `root` to search_nodes, scan_nodes_by_types or scan_text_nodes, or use get_node.',
+            ),
+          );
         } else {
           reject(new Error(message));
         }

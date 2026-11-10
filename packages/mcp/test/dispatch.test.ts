@@ -312,6 +312,7 @@ describe('dispatchTool', () => {
       'get_local_components',
       'import_variable',
       'import_style',
+      'navigate_to_page',
     ]);
     for (const { name } of ALL_TOOL_SPECS) {
       if (name === 'batch') continue;

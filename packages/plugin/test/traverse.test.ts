@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { PAGE_LOAD_DEADLINE_MS } from '../src/page-lookup.js';
 import { collectMatches, flattenForest, resolveScope, walk } from '../src/traverse.js';
 import { unloadedPage } from './page-fake.js';
 import { CONNECTION_ERROR } from './read-retry-fake.js';
@@ -180,6 +181,59 @@ describe('resolveScope', () => {
       expect((await reading).message).toContain('current page still answers');
       expect(f.getNodeByIdAsync).toHaveBeenCalledExactlyOnceWith('P:1');
       expect(f.loadAsync).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  /** Start a page-root read whose load never settles, and let the load deadline fire. */
+  const hangingPageRead = async (f: ReturnType<typeof unloadedPage>) => {
+    f.loadAsync.mockImplementation(() => new Promise<void>(() => {}));
+    const reading = resolveScope(f.figmaCtx, f.page.id).then(
+      () => new Error('the page root read resolved'),
+      (error: unknown) => error as Error,
+    );
+    await vi.advanceTimersByTimeAsync(PAGE_LOAD_DEADLINE_MS);
+    return reading;
+  };
+  it('names the load deadline and the node-scoped alternative when a page root load hangs', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = unloadedPage();
+      const error = await hangingPageRead(f);
+      expect(error.message).toContain(`page load exceeded ${PAGE_LOAD_DEADLINE_MS / 1000} s`);
+      expect(error.message).toContain('Loading page "Before" (P:2) failed.');
+      expect(error.message).toContain('current page still answers');
+      expect(error.message).toMatch(/node id on that page as root.*get_node/);
+      expect(error.message).not.toContain('Reload the plugin');
+      expect(f.getNodeByIdAsync).toHaveBeenCalledExactlyOnceWith('P:1');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it('keeps the reload advice when a page root load hangs and the probe fails', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = unloadedPage();
+      f.getNodeByIdAsync.mockRejectedValue(new Error(CONNECTION_ERROR));
+      const error = await hangingPageRead(f);
+      expect(error.message).toContain(`page load exceeded ${PAGE_LOAD_DEADLINE_MS / 1000} s`);
+      expect(error.message).toContain('Loading page "Before" (P:2) failed.');
+      expect(error.message).toMatch(/session is not answering reads.*Reload the plugin/);
+      expect(error.message).not.toContain('get_node');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it('rethrows a hung current-page root load without advice', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = unloadedPage();
+      f.figmaCtx.currentPage = f.page;
+      const error = await hangingPageRead(f);
+      expect(error.message).toMatch(
+        new RegExp(`^PageNode\\.loadAsync\\(P:2\\) failed: page load exceeded \\d+ s$`),
+      );
+      expect(f.getNodeByIdAsync).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }
