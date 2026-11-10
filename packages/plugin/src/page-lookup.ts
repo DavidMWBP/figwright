@@ -7,10 +7,10 @@ const timedOutLoads = new WeakSet<Error>();
 const expiredLoads = new WeakSet<Error>();
 
 /**
- * Overall bound on one page load, retry included. It outlasts the retry path (10 s + 250 ms pause
- * + 10 s) and fires before the 30 s default sandbox budget, so callers get a named error instead of
- * a bare bridge timeout. If Figma blocks the sandbox thread during the load, this timer cannot fire;
- * the UI bridge's timeout covers that case.
+ * Overall bound on one page load, retry included. It outlasts the 20.25 s retry path (two 10 s
+ * connection timeouts and a 250 ms pause) and fires before the 30 s default sandbox budget, so
+ * callers get a named error instead of a bare bridge timeout. If Figma blocks the sandbox thread
+ * during the load, this timer cannot fire; the UI bridge's timeout covers that case.
  */
 export const PAGE_LOAD_DEADLINE_MS = 25_000;
 

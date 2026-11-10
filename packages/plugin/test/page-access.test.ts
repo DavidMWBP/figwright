@@ -149,17 +149,16 @@ it('shares the three-retry allowance between page loads and node lookups', async
 });
 
 /** Observe a call's outcome without awaiting it, so fake time can advance while it runs. */
-const observe = (running: Promise<unknown>) => {
+const observe = (running: unknown) => {
   const seen: { settled: boolean; error?: Error } = { settled: false };
-  running.then(
-    () => {
-      seen.settled = true;
-    },
-    (error: Error) => {
-      seen.settled = true;
-      seen.error = error;
-    },
-  );
+  void (async () => {
+    try {
+      await running;
+    } catch (error) {
+      seen.error = error as Error;
+    }
+    seen.settled = true;
+  })();
   return seen;
 };
 
@@ -228,39 +227,36 @@ it('keeps the connection timeout out of the deadline classification', async () =
   }
 });
 
-it.each(['resolves', 'rejects'])(
-  'ignores a page load that %s after the deadline',
-  async late => {
-    vi.useFakeTimers();
-    const unhandled = vi.fn();
-    process.on('unhandledRejection', unhandled);
-    try {
-      const f = unloadedPage();
-      let settle!: () => void;
-      f.loadAsync.mockImplementation(
-        () =>
-          new Promise<void>((resolve, reject) => {
-            settle = late === 'resolves' ? resolve : () => reject(new Error('late failure'));
-          }),
-      );
-      const seen = renameUnloaded(f);
-      await vi.advanceTimersByTimeAsync(PAGE_LOAD_DEADLINE_MS);
-      const error = seen.error;
-      expect(isPageLoadDeadline(error)).toBe(true);
-      settle();
-      await vi.runAllTimersAsync();
-      vi.useRealTimers();
-      // Node reports unhandled rejections once the microtask queue drains, before setImmediate.
-      await new Promise(resolve => setImmediate(resolve));
-      expect(unhandled).not.toHaveBeenCalled();
-      expect(seen.error).toBe(error);
-      expect(f.page.name).toBe('Before');
-    } finally {
-      process.off('unhandledRejection', unhandled);
-      vi.useRealTimers();
-    }
-  },
-);
+it.each(['resolves', 'rejects'])('ignores a page load that %s after the deadline', async late => {
+  vi.useFakeTimers();
+  const unhandled = vi.fn<(reason: unknown) => void>();
+  process.on('unhandledRejection', unhandled);
+  try {
+    const f = unloadedPage();
+    let settle!: () => void;
+    f.loadAsync.mockImplementation(
+      () =>
+        new Promise<void>((resolve, reject) => {
+          settle = late === 'resolves' ? resolve : () => reject(new Error('late failure'));
+        }),
+    );
+    const seen = renameUnloaded(f);
+    await vi.advanceTimersByTimeAsync(PAGE_LOAD_DEADLINE_MS);
+    const error = seen.error;
+    expect(isPageLoadDeadline(error)).toBe(true);
+    settle();
+    await vi.runAllTimersAsync();
+    vi.useRealTimers();
+    // Node reports unhandled rejections once the microtask queue drains, before setImmediate.
+    await new Promise(resolve => setImmediate(resolve));
+    expect(unhandled).not.toHaveBeenCalled();
+    expect(seen.error).toBe(error);
+    expect(f.page.name).toBe('Before');
+  } finally {
+    process.off('unhandledRejection', unhandled);
+    vi.useRealTimers();
+  }
+});
 
 it('clears the page-load deadline when the load finishes first', async () => {
   vi.useFakeTimers();
