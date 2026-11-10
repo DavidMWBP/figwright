@@ -106,7 +106,7 @@ it.each([true, false])(
         expect(error.cause).toMatchObject({ cause });
         expect(error.message).toMatch(
           healthy
-            ? /current page still answers.*Open.*page.*Figma.*retry/
+            ? /current page still answers.*node id on that page as root.*get_node/
             : /session is not answering reads.*Reload the plugin/,
         );
         expect(error.message.includes('Reload the plugin')).toBe(!healthy);
