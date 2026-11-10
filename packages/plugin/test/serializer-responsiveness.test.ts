@@ -146,7 +146,16 @@ describe('native-read time slicing', () => {
         }) as unknown as SceneNode,
     );
     try {
-      await expect(serialize(nodes)).rejects.toBe(failure);
+      // The rejection names the failing node and its read stage, and keeps the native error as the cause.
+      const error = await serialize(nodes).then(
+        () => undefined,
+        (rejection: unknown) => rejection,
+      );
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).cause).toBe(failure);
+      expect((error as Error).message).toContain(
+        'native read failed (node 2:0 "Node 0", read stage: native fields)',
+      );
     } finally {
       clock.mockRestore();
     }
