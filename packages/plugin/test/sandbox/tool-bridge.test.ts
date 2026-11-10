@@ -397,8 +397,18 @@ describe('createToolBridge', () => {
 
       // A late reply for the timed-out call is ignored; a fresh call still resolves.
       emit(createToolResult({ id: sent[0]!.id, result: { ok: true } }));
-      expect(bridge.pendingCount()).toBe(0);
+      await expect(answer).resolves.toEqual({ error });
+      expect(((await answer) as { error: PluginToolFailure }).error.code).toBe(ErrorCode.Timeout);
       const retry = bridge.handler('navigate_to_page', { pageId: '0:1' });
+      const retrySettled = vi.fn();
+      void retry.then(retrySettled, retrySettled);
+      await Promise.resolve();
+      expect(retrySettled).not.toHaveBeenCalled();
+      expect(bridge.pendingCount()).toBe(1);
+      emit(createToolResult({ id: sent[0]!.id, result: { ok: true } }));
+      await Promise.resolve();
+      expect(retrySettled).not.toHaveBeenCalled();
+      expect(bridge.pendingCount()).toBe(1);
       emit(createToolResult({ id: sent[1]!.id, result: { pageId: '0:1' } }));
       await expect(retry).resolves.toEqual({ pageId: '0:1' });
       expect(bridge.pendingCount()).toBe(0);
