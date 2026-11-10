@@ -400,7 +400,7 @@ describe('createToolBridge', () => {
       await expect(answer).resolves.toEqual({ error });
       expect(((await answer) as { error: PluginToolFailure }).error.code).toBe(ErrorCode.Timeout);
       const retry = bridge.handler('navigate_to_page', { pageId: '0:1' });
-      const retrySettled = vi.fn();
+      const retrySettled = vi.fn<(value: unknown) => void>();
       void retry.then(retrySettled, retrySettled);
       await Promise.resolve();
       expect(retrySettled).not.toHaveBeenCalled();
