@@ -369,6 +369,58 @@ describe('createToolBridge', () => {
     },
   );
 
+  it('reports a navigate_to_page timeout as a page load that exceeded the budget, with the node-scoped alternative', async () => {
+    vi.useFakeTimers();
+    const { bridge, sent, emit } = setup();
+    try {
+      // The sandbox never replies: a page load on a very large page outlasting the old window.
+      const answer = bridge.handler('navigate_to_page', { pageId: '0:1' }).then(
+        result => ({ result }),
+        error => ({ error }),
+      );
+      await vi.advanceTimersByTimeAsync(DEFAULT_TOOL_BUDGET_MS + 1);
+      expect(bridge.pendingCount()).toBe(1);
+      await vi.advanceTimersByTimeAsync(HEAVY_TOOL_BUDGET_MS - DEFAULT_TOOL_BUDGET_MS - 1);
+      const { error } = (await answer) as { error: PluginToolFailure };
+      expect(error).toBeInstanceOf(PluginToolFailure);
+      expect(error.code).toBe(ErrorCode.Timeout);
+      expect(error.message.startsWith('sandbox tool timeout (method=navigate_to_page)')).toBe(true);
+      expect(error.message).toContain(`exceeded ${HEAVY_TOOL_BUDGET_MS / 1000} s`);
+      expect(error.message).toMatch(
+        /may still complete.*read the current page back before retrying/,
+      );
+      expect(error.message).toMatch(
+        /node id.*`root`.*search_nodes.*scan_nodes_by_types.*scan_text_nodes.*get_node/,
+      );
+      expect(error.message).not.toMatch(/reload|by hand/i);
+      expect(bridge.pendingCount()).toBe(0);
+
+      // A late reply for the timed-out call is ignored; a fresh call still resolves.
+      emit(createToolResult({ id: sent[0]!.id, result: { ok: true } }));
+      expect(bridge.pendingCount()).toBe(0);
+      const retry = bridge.handler('navigate_to_page', { pageId: '0:1' });
+      emit(createToolResult({ id: sent[1]!.id, result: { pageId: '0:1' } }));
+      await expect(retry).resolves.toEqual({ pageId: '0:1' });
+      expect(bridge.pendingCount()).toBe(0);
+    } finally {
+      bridge.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it('names the navigate_to_page budget in force when the timeout is overridden', async () => {
+    vi.useFakeTimers();
+    const { bridge } = setup(45_000);
+    try {
+      const answer = bridge.handler('navigate_to_page', { pageId: '0:1' }).catch(error => error);
+      await vi.advanceTimersByTimeAsync(45_000);
+      expect(((await answer) as Error).message).toContain('exceeded 45 s');
+    } finally {
+      bridge.dispose();
+      vi.useRealTimers();
+    }
+  });
+
   it.each(['search_nodes', 'scan_nodes_by_types', 'scan_text_nodes', 'get_local_components'])(
     'keeps a large %s pending past the default window and accepts its result',
     async method => {
