@@ -188,7 +188,10 @@ describe('resolveScope', () => {
   /** Start a page-root read whose load never settles, and let the load deadline fire. */
   const hangingPageRead = async (f: ReturnType<typeof unloadedPage>) => {
     f.loadAsync.mockImplementation(() => new Promise<void>(() => {}));
-    const reading = resolveScope(f.figmaCtx, f.page.id).catch(error => error as Error);
+    const reading = resolveScope(f.figmaCtx, f.page.id).then(
+      () => new Error('the page root read resolved'),
+      (error: unknown) => error as Error,
+    );
     await vi.advanceTimersByTimeAsync(PAGE_LOAD_DEADLINE_MS);
     return reading;
   };
