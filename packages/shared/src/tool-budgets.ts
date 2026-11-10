@@ -53,6 +53,9 @@ const HEAVY_TOOLS: ReadonlySet<string> = new Set([
   // window lets a background import finish instead of timing out while Figma is still importing.
   'import_variable',
   'import_style',
+  // A page load on a very large page, plus the direct-switch fallback the handler runs when that
+  // load keeps timing out, outlasts the default window: one such call failed at 30.6s on it.
+  'navigate_to_page',
 ]);
 
 /** Base budget `B`: how long the Figma sandbox itself may take. Used by the UI → sandbox bridge. */
