@@ -1,3 +1,5 @@
+import type { DisconnectReason } from '../relay/session.js';
+
 /**
  * What one connected plugin session looks like to anything that has to choose between them.
  *
@@ -17,6 +19,23 @@ export interface PluginSessionInfo {
   pageName: string | null;
   lastActivityAt: number;
   pluginVersion: string;
+  /** The plugin's build stamp; absent for a plugin, or a leader, older than build stamps. */
+  pluginBuildId?: number;
+}
+
+/**
+ * A session whose socket dropped and that is still inside its grace window, so its plugin may
+ * resume under the same id. Kept apart from `PluginSessionInfo` so nothing routes to it; a follower
+ * reads it from the same leader `/ping` that carries the connected list.
+ */
+export interface ReconnectingSessionInfo {
+  id: string;
+  fileName: string | null;
+  pageName: string | null;
+  pluginVersion: string;
+  /** Epoch ms, on the leader's clock, when the socket dropped. */
+  disconnectedAt: number;
+  reason: DisconnectReason;
 }
 
 /**

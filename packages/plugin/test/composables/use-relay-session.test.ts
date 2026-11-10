@@ -43,6 +43,8 @@ const mocks = vi.hoisted(() => {
   };
 
   return {
+    /** Options each RelayClient was constructed with, newest last. */
+    clientOptions: [] as unknown[],
     notifyActivity,
     wake,
     connect,
@@ -61,6 +63,9 @@ const mocks = vi.hoisted(() => {
 
 vi.mock('../../ui/relay/client.js', () => ({
   RelayClient: class {
+    constructor(opts: unknown) {
+      mocks.clientOptions.push(opts);
+    }
     sessionId = 'session-abcdef123456';
     setToolHandler = mocks.setToolHandler;
     getState = (): RelayClientState => mocks.baseState;
@@ -445,6 +450,16 @@ describe('useRelaySession', () => {
 
       expect(mocks.setToolHandler).toHaveBeenCalledWith(mocks.bridgeHandler);
       expect(mocks.connect).toHaveBeenCalled();
+    });
+
+    it('hands the client the build id stamped at build time, for the hello', () => {
+      withSession();
+
+      // vitest.config.ts mirrors the build-time define with this value.
+      expect(mocks.clientOptions.at(-1)).toMatchObject({
+        clientVersion: '1.2.3',
+        clientBuildId: 1_700_000_000_000,
+      });
     });
 
     it('mirrors relay state into a ref', () => {

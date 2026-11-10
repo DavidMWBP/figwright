@@ -7,8 +7,36 @@ import {
 } from '@figwright/shared';
 import { decode, encode } from '@msgpack/msgpack';
 
-import type { PluginSessionInfo } from '../routing/sessions.js';
+import type { DisconnectReason } from '../relay/session.js';
+import type { PluginSessionInfo, ReconnectingSessionInfo } from '../routing/sessions.js';
 import { ABDICATE_PATH, PING_PATH, RPC_PATH } from './leader-endpoints.js';
+
+/** What the leader holds: sessions calls can reach, and those inside their grace window. */
+export interface SessionView {
+  connected: readonly PluginSessionInfo[];
+  reconnecting: readonly ReconnectingSessionInfo[];
+  /**
+   * Set when the leader's sessions could not be read at all, saying why; the lists are then empty
+   * because nothing could be asked, not because no plugin is connected.
+   */
+  leaderUnreachable?: string;
+  /**
+   * Build stamp of the leader holding these sessions. Absent when the leader could not be read or
+   * predates build ids.
+   */
+  leaderBuildId?: number;
+}
+
+/** A /ping reply body, or why there is none. */
+type PingOutcome = { body: Record<string, unknown> } | { error: string };
+
+const CLOSED_BY: ReadonlySet<DisconnectReason['closedBy']> = new Set(['server', 'plugin', 'lost']);
+
+/** The object entries of a JSON array field another process sent; anything else is skipped. */
+const records = (raw: unknown): Record<string, unknown>[] =>
+  Array.isArray(raw)
+    ? raw.filter((e): e is Record<string, unknown> => typeof e === 'object' && e !== null)
+    : [];
 
 /**
  * Release the body of a response we are returning without reading. `fetch` delivers the body as a
@@ -22,6 +50,30 @@ import { ABDICATE_PATH, PING_PATH, RPC_PATH } from './leader-endpoints.js';
  */
 const releaseBody = (res: Response): void => {
   void res.body?.cancel().catch(() => undefined);
+};
+
+/**
+ * A failed fetch's own message is a generic "fetch failed"; what actually went wrong (a reset, a
+ * refused connection, a closed socket) sits on its nested cause, so carry its code and message
+ * too.
+ */
+const describeTransportError = (err: unknown): string => {
+  const message = err instanceof Error ? err.message : String(err);
+  const cause = err instanceof Error ? err.cause : undefined;
+  if (!(cause instanceof Error)) return message;
+  const code = (cause as NodeJS.ErrnoException).code;
+  return `${message} (cause${code === undefined ? '' : ` ${code}`}: ${cause.message})`;
+};
+
+/**
+ * A JSON value's kind, never its content: whatever answers /ping chooses the value, and the
+ * description is echoed into a tool result.
+ */
+const describeType = (value: unknown): string => {
+  if (value === undefined) return 'absent';
+  if (value === null) return 'null';
+  if (typeof value === 'object') return 'an object';
+  return `a ${typeof value}`;
 };
 
 export const DEFAULT_FOLLOWER_RPC_TIMEOUT_MS = 35_000;
@@ -84,20 +136,27 @@ export class Follower {
    * between them.
    */
   private async fetchPing(): Promise<Record<string, unknown> | undefined> {
+    const outcome = await this.pingOutcome();
+    return 'body' in outcome ? outcome.body : undefined;
+  }
+
+  /** FetchPing, keeping the reason a failed /ping gave for anything that reports it. */
+  private async pingOutcome(): Promise<PingOutcome> {
+    const url = `${this.opts.leaderUrl}${PING_PATH}`;
     try {
-      const res = await this.opts.fetch(`${this.opts.leaderUrl}${PING_PATH}`, {
+      const res = await this.opts.fetch(url, {
         signal: AbortSignal.timeout(this.opts.pingTimeoutMs),
       });
       if (!res.ok) {
         releaseBody(res);
-        return undefined;
+        return { error: `${url} answered HTTP ${res.status}` };
       }
       const body: unknown = await res.json();
       return typeof body === 'object' && body !== null
-        ? (body as Record<string, unknown>)
-        : undefined;
-    } catch {
-      return undefined;
+        ? { body: body as Record<string, unknown> }
+        : { error: `${url} answered with a body that is not an object` };
+    } catch (err) {
+      return { error: `${url} failed: ${describeTransportError(err)}` };
     }
   }
 
@@ -182,23 +241,67 @@ export class Follower {
    * same place, an agent told nothing is available to bind, which is true either way.
    */
   async listSessions(): Promise<readonly PluginSessionInfo[]> {
-    const body = await this.fetchPing();
-    const raw = body?.sessions;
-    if (!Array.isArray(raw)) return [];
-    const out: PluginSessionInfo[] = [];
-    for (const entry of raw as readonly unknown[]) {
-      if (typeof entry !== 'object' || entry === null) continue;
-      const s = entry as Record<string, unknown>;
+    return (await this.listSessionView()).connected;
+  }
+
+  /**
+   * The connected sessions plus those inside their disconnect grace window, from one `/ping` so the
+   * two lists describe the same moment. A leader that predates `reconnecting` yields an empty one.
+   * A /ping that fails, or whose `sessions` is not a list, sets `leaderUnreachable` instead. The
+   * leader's `buildId` rides along as `leaderBuildId`, so list_files names the build that owns the
+   * sessions rather than this follower's.
+   */
+  async listSessionView(): Promise<SessionView> {
+    const outcome = await this.pingOutcome();
+    if ('error' in outcome)
+      return { connected: [], reconnecting: [], leaderUnreachable: outcome.error };
+    const { body } = outcome;
+    if (!Array.isArray(body.sessions)) {
+      return {
+        connected: [],
+        reconnecting: [],
+        leaderUnreachable: `the leader's /ping reply has no sessions list (sessions is ${describeType(body.sessions)})`,
+      };
+    }
+    const connected: PluginSessionInfo[] = [];
+    for (const s of records(body.sessions)) {
       if (typeof s.id !== 'string') continue;
-      out.push({
+      connected.push({
         id: s.id,
         fileName: typeof s.fileName === 'string' ? s.fileName : null,
         pageName: typeof s.pageName === 'string' ? s.pageName : null,
         lastActivityAt: typeof s.lastActivityAt === 'number' ? s.lastActivityAt : 0,
         pluginVersion: typeof s.pluginVersion === 'string' ? s.pluginVersion : 'unknown',
+        ...(typeof s.pluginBuildId === 'number' ? { pluginBuildId: s.pluginBuildId } : {}),
       });
     }
-    return out;
+    const reconnecting: ReconnectingSessionInfo[] = [];
+    for (const s of records(body.reconnecting)) {
+      const reason = s.reason as Record<string, unknown> | null | undefined;
+      if (
+        typeof s.id !== 'string' ||
+        typeof s.disconnectedAt !== 'number' ||
+        typeof reason?.code !== 'number' ||
+        !CLOSED_BY.has(reason.closedBy as DisconnectReason['closedBy'])
+      ) {
+        continue;
+      }
+      reconnecting.push({
+        id: s.id,
+        fileName: typeof s.fileName === 'string' ? s.fileName : null,
+        pageName: typeof s.pageName === 'string' ? s.pageName : null,
+        pluginVersion: typeof s.pluginVersion === 'string' ? s.pluginVersion : 'unknown',
+        disconnectedAt: s.disconnectedAt,
+        reason: {
+          code: reason.code,
+          closedBy: reason.closedBy as DisconnectReason['closedBy'],
+          detail: typeof reason.detail === 'string' ? reason.detail : null,
+        },
+      });
+    }
+    return typeof body.buildId === 'number'
+      ? { connected, reconnecting, leaderBuildId: body.buildId }
+      : { connected, reconnecting };
   }
 
   async sendRpc(
@@ -240,12 +343,13 @@ export class Follower {
         signal,
       });
     } catch (err) {
-      this.opts.log(`[follower] rpc transport error: ${(err as Error).message}`);
+      const reason = describeTransportError(err);
+      this.opts.log(`[follower] rpc transport error: ${reason}`);
       return {
         kind: 'err',
         requestId: rpc.requestId,
         code: ErrorCode.Internal,
-        message: `follower rpc transport: ${(err as Error).message}`,
+        message: `follower rpc transport: ${reason}`,
       };
     }
 

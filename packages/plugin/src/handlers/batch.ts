@@ -9,7 +9,7 @@ import type { BatchProgress } from '../../protocol/bridge.js';
 import type { SandboxHandlers, SandboxToolHandler } from '../dispatcher.js';
 import { figmaCall } from '../figma-call.js';
 import { loadPage } from '../page-lookup.js';
-import { getReadRetryState } from '../read-retry.js';
+import { getReadRetryState, retryRead } from '../read-retry.js';
 import {
   captureOverrideGuard,
   type InstanceGuard,
@@ -932,7 +932,7 @@ const instancePropsInverse: BatchInverse = {
       if (prop !== undefined) previous[key] = prop.boundVariables?.value ?? prop.value;
     }
     const main = await figmaCall('getMainComponentAsync', instance.id, () =>
-      instance.getMainComponentAsync(),
+      retryRead(figmaCtx, () => instance.getMainComponentAsync()),
     );
     if (main === null) {
       throw new Error(
@@ -965,7 +965,7 @@ const swapInverse: BatchInverse = {
   async capture(figmaCtx, params) {
     const instance = await instanceOf(figmaCtx, params, 'swap_component');
     const main = await figmaCall('getMainComponentAsync', instance.id, () =>
-      instance.getMainComponentAsync(),
+      retryRead(figmaCtx, () => instance.getMainComponentAsync()),
     );
     if (main === null) {
       throw new Error(`batch/swap_component: ${instance.id} has no main component to swap back to`);
@@ -1466,7 +1466,9 @@ const bindPropertyInverse: BatchInverse = {
     const node = (await nodeOf(figmaCtx, id, 'bind_component_property')) as Referencing;
     const main =
       node.type === 'INSTANCE'
-        ? await figmaCall('getMainComponentAsync', node.id, () => node.getMainComponentAsync())
+        ? await figmaCall('getMainComponentAsync', node.id, () =>
+            retryRead(figmaCtx, () => node.getMainComponentAsync()),
+          )
         : null;
     const state: BindPropertyState = {
       id,

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { describeBuild } from '../build-id.js';
 import { dispatchTargeted } from '../dispatch.js';
 import type { Follower } from '../election/follower.js';
 import { type Node, NodeRole } from '../election/node.js';
@@ -12,7 +13,9 @@ export const pingTool: ToolSpec = {
   name: PING_TOOL_NAME,
   description:
     'Health check. Returns server info plus, when a plugin is connected, end-to-end info from the ' +
-    'Figma sandbox. On a follower it also reports the leader’s version and build, and warns ' +
+    'Figma sandbox. server.build and each sessions.all[].pluginBuild name the exact build (epoch ' +
+    'ms with its UTC time; "unknown" for a plugin too old to send one), since builds of one ' +
+    'release share a version. On a follower it also reports the leader’s version and build, and warns ' +
     '(versionSkew / buildSkew) when a stale older server still owns the plugin. sessions.all names ' +
     'each connected file as of its last activity, so a file whose tab has not been in front since ' +
     'it connected shows fileName: null — use list_files, which asks each plugin directly, when you ' +
@@ -29,6 +32,8 @@ export interface PingServerInfo {
   ts: number;
   /** This process's build stamp (epoch ms; 0 when running unbundled). See build-id.ts. */
   buildId: number;
+  /** `buildId` with its UTC build time, or "0 (unbundled)" (see describeBuild). */
+  build: string;
   /**
    * Follower path only: the version of the leader process that actually owns the plugin and runs
    * the work. Usually equal to `version`; differs when a stale older server still holds the port.
@@ -77,6 +82,11 @@ export interface PingSessionInfo {
    * prose warning rides on the tool result itself; this is the fact behind it.
    */
   pluginVersion: string;
+  /**
+   * The plugin's build stamp with its UTC build time, "unknown" for a plugin older than build
+   * stamps. Every dev build reports the same `pluginVersion`; this tells them apart.
+   */
+  pluginBuild: string;
 }
 
 export interface PingSessionsInfo {
@@ -119,6 +129,7 @@ const serverInfo = (ctx: PingContext): PingServerInfo => ({
   port: ctx.node.isLeader() ? (ctx.node.getLeader()?.port ?? null) : null,
   ts: Date.now(),
   buildId: ctx.buildId ?? 0,
+  build: describeBuild(ctx.buildId ?? 0),
 });
 
 export const handlePing = async (ctx: PingContext): Promise<PingResult> => {
@@ -168,6 +179,7 @@ export const handlePing = async (ctx: PingContext): Promise<PingResult> => {
         pageName: s.pageName,
         lastActivityAt: s.lastActivityAt,
         pluginVersion: s.clientVersion,
+        pluginBuild: describeBuild(s.clientBuildId),
       }));
     const sessions: PingSessionsInfo = {
       connectedCount: connected.length,

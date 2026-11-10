@@ -44,6 +44,7 @@ export const useRelaySession = (appVersion: string): RelaySession => {
     // exactly that one port. Scanning a range would only risk stalling on unrelated local services.
     ports: [DEFAULT_PORT],
     clientVersion: appVersion,
+    clientBuildId: Number(__PLUGIN_BUILD_ID__),
     log: msg => console.log(msg),
   });
   const bridge = createToolBridge({ log: msg => console.log(msg) });

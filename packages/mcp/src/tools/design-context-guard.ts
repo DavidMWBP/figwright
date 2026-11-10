@@ -119,6 +119,8 @@ const projectToCompact = (
   // The plugin sets an instance's mainComponentId at every detail level (only the resolved
   // mainComponent object is full-only), so the downgrade keeps instance→component identity too.
   if (node.mainComponentId !== undefined) out.mainComponentId = node.mainComponentId;
+  if (node.mainComponentUnavailable !== undefined)
+    out.mainComponentUnavailable = node.mainComponentUnavailable;
   if (node.truncated === true) out.truncated = true;
   if (node.deduped === true) out.deduped = true;
   if (extraFields !== undefined) {

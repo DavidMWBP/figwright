@@ -1,6 +1,6 @@
 import { ErrorCode, getFollowerBudget, getRelayBudget } from '@figwright/shared';
 
-import type { Follower } from './election/follower.js';
+import type { Follower, SessionView } from './election/follower.js';
 import { type Node, NodeRole } from './election/node.js';
 import type { PluginSessionInfo } from './routing/sessions.js';
 import { getFileTarget, resolveFileTarget } from './routing/target.js';
@@ -23,6 +23,8 @@ export interface DispatchContext {
   node: Node;
   follower: Follower;
   log?: (msg: string) => void;
+  /** This process's build stamp, reported as the leader's when this node leads. Defaults to 0. */
+  buildId?: number;
 }
 
 export class DispatchError extends Error {
@@ -47,6 +49,15 @@ export const dispatchTool = async (
 
   let lastError: Error | null = null;
   let replyReceived = false;
+  let sessionId = opts.sessionId;
+  let writeSessionResolved = false;
+  const writeRequestId =
+    typeof args === 'object' &&
+    args !== null &&
+    'requestId' in args &&
+    typeof args.requestId === 'string'
+      ? args.requestId
+      : undefined;
 
   // The election can declare the port wedged *while this call is in flight*, and that verdict has
   // to reach a call that is already blocked — not just the next one. Two halves: the signal cuts
@@ -97,7 +108,7 @@ export const dispatchTool = async (
             toolName,
             args,
             opts.perCallTimeoutMs ?? getRelayBudget(toolName, args),
-            opts.sessionId,
+            sessionId,
             (served, attribution) => {
               replyReceived = served !== undefined || attribution != null;
               reportSkew(leader.relay.skewNotice(served));
@@ -111,13 +122,26 @@ export const dispatchTool = async (
         }
       }
 
+      // Resolve before delivery: a lost HTTP reply cannot tell us which plugin ran the write.
+      // Keep the pin across retries and leadership changes because idempotency is session-local.
+      if (sessionId === undefined && writeRequestId !== undefined) {
+        sessionId = await ctx.follower.resolveActiveSession();
+        if (sessionId === undefined) {
+          throw new DispatchError(
+            ErrorCode.PluginDisconnected,
+            'cannot resolve a plugin session for this write; no write sent',
+          );
+        }
+        writeSessionResolved = true;
+      }
+
       // Follower→leader budget = B + two margins (outermost layer), so it outlives the leader's own
       // relay timer for the same tool.
       const resp = await ctx.follower.sendRpc(
         toolName,
         args,
         undefined,
-        opts.sessionId,
+        sessionId,
         opts.perCallTimeoutMs ?? getFollowerBudget(toolName, args),
         conflicted.signal,
       );
@@ -131,7 +155,11 @@ export const dispatchTool = async (
 
       // 'relay stopping' is the leader rejecting the call because it's shutting down or abdicating —
       // by the retry delay a new leader (possibly this very node) has the port, so it's as transient
-      // as a dropped connection. Safe to replay: writes carry a stable requestId the plugin dedupes.
+      // as a dropped connection. Writes keep their session and stable requestId on every attempt,
+      // but that only makes a retry safe where the plugin's idempotency cache covers it: the same
+      // plugin run (a restart or another session has its own empty cache), a first attempt still in
+      // flight or settled successfully under 60s ago, and never a rejection, which is not kept.
+      // Outside that a retried write can apply twice.
       const originalMessage =
         resp.attribution !== undefined && resp.message.endsWith(resp.attribution)
           ? resp.message.slice(0, -resp.attribution.length).trimEnd()
@@ -140,7 +168,14 @@ export const dispatchTool = async (
         resp.code === ErrorCode.Internal &&
         /transport|fetch failed|ECONNREFUSED|relay stopping/i.test(originalMessage);
       if (!isTransient || attempt === maxAttempts - 1) {
-        throw new DispatchError(resp.code, resp.message);
+        // A lost reply cannot say whether the plugin applied a write; say so, and where it went.
+        throw new DispatchError(
+          resp.code,
+          !replyReceived && writeRequestId !== undefined
+            ? `${resp.message}; outcome unknown, read back before retrying: ${toolName} request ` +
+                `${writeRequestId} was sent to session ${sessionId ?? '(unresolved)'}`
+            : resp.message,
+        );
       }
 
       log(
@@ -154,6 +189,9 @@ export const dispatchTool = async (
     throw new DispatchError(ErrorCode.Internal, 'dispatch exhausted retries');
   } catch (cause) {
     const error = cause instanceof Error ? cause : new Error(String(cause), { cause });
+    if (writeSessionResolved && sessionId !== undefined && !error.message.includes(sessionId)) {
+      error.message += ` (write pinned to session ${sessionId})`;
+    }
     if (
       !replyReceived &&
       !error.message.includes('(answered by session ') &&
@@ -178,6 +216,25 @@ export const listPluginSessions = async (
   if (ctx.node.isConflicted()) return [];
   if (ctx.node.isLeader()) return ctx.node.getLeader()?.relay.listSessionInfo() ?? [];
   return ctx.follower.listSessions();
+};
+
+/**
+ * The connected sessions and those inside their disconnect grace window, read at one moment, for
+ * `list_files`. Everything that routes keeps reading `listPluginSessions`.
+ */
+export const listSessionView = async (ctx: DispatchContext): Promise<SessionView> => {
+  if (ctx.node.isConflicted()) {
+    return { connected: [], reconnecting: [], leaderUnreachable: ctx.node.conflictMessage };
+  }
+  if (ctx.node.isLeader()) {
+    const relay = ctx.node.getLeader()?.relay;
+    return {
+      connected: relay?.listSessionInfo() ?? [],
+      reconnecting: relay?.listReconnectingInfo() ?? [],
+      leaderBuildId: ctx.buildId ?? 0,
+    };
+  }
+  return ctx.follower.listSessionView();
 };
 
 /**

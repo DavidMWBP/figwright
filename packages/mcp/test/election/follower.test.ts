@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events';
 import { createServer, type Server as HttpServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
@@ -11,15 +12,18 @@ import {
   newId,
   PROTOCOL_VERSION,
   type HelloParams,
+  type ListFilesResult,
   SystemMethod,
 } from '@figwright/shared';
 import { decode } from '@msgpack/msgpack';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket } from 'ws';
 
 import { Follower } from '../../src/election/follower.js';
 import { attachLeaderEndpoints } from '../../src/election/leader-endpoints.js';
 import { Relay } from '../../src/relay/relay.js';
+import { handleListFiles } from '../../src/tools/list-files.js';
+import { fakeRelay } from '../relay-fake.js';
 
 interface Bound {
   http: HttpServer;
@@ -116,6 +120,26 @@ const attachFakePlugin = async (
   b.plugins.push(ws);
 };
 
+/** In-process transport: the leader's real /ping handler answers, with no port opened. */
+const viaLeader =
+  (http: HttpServer): typeof fetch =>
+  async input => {
+    const req = Object.assign(new EventEmitter(), {
+      method: 'GET',
+      url: new URL(String(input)).pathname,
+      headers: { host: '127.0.0.1:3055' },
+    });
+    return new Promise<Response>(resolve => {
+      let status = 0;
+      http.emit('request', req, {
+        writeHead: (s: number) => {
+          status = s;
+        },
+        end: (body: string) => resolve(new Response(body, { status })),
+      });
+    });
+  };
+
 describe('Follower HTTP client', () => {
   it('ping returns true when leader is up', async () => {
     const b = await startLeader();
@@ -179,6 +203,34 @@ describe('Follower HTTP client', () => {
     if (resp.kind !== 'err') throw new Error(`expected err, got ${resp.kind}`);
     expect(resp.code).toBe(ErrorCode.Internal);
     expect(resp.requestId).toBe('r-dead');
+  });
+
+  it('sendRpc keeps the network cause of a failed fetch', async () => {
+    // Undici's shape when the leader drops the socket: a generic TypeError over a coded cause.
+    const cause = Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' });
+    const f = new Follower({
+      leaderUrl: 'http://leader.test',
+      fetch: async () => {
+        throw new TypeError('fetch failed', { cause });
+      },
+    });
+    const resp = await f.sendRpc('get_document', undefined, 'r-reset');
+    if (resp.kind !== 'err') throw new Error(`expected err, got ${resp.kind}`);
+    expect(resp.message).toMatch(/^follower rpc transport: fetch failed/);
+    expect(resp.message).toContain('UND_ERR_SOCKET');
+    expect(resp.message).toContain('other side closed');
+  });
+
+  it('sendRpc reports a failed fetch without a cause as-is', async () => {
+    const f = new Follower({
+      leaderUrl: 'http://leader.test',
+      fetch: async () => {
+        throw new TypeError('fetch failed');
+      },
+    });
+    const resp = await f.sendRpc('get_document', undefined, 'r-bare');
+    if (resp.kind !== 'err') throw new Error(`expected err, got ${resp.kind}`);
+    expect(resp.message).toBe('follower rpc transport: fetch failed');
   });
 
   it('sendRpc ends early when the caller aborts, without waiting out its budget', async () => {
@@ -377,6 +429,189 @@ describe('Follower HTTP client', () => {
       fetch: async () => res,
     });
     expect(await f.requestAbdication(200)).toBe('unsupported');
+  });
+
+  it("sees the leader's connected and reconnecting sessions apart, from one /ping", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.UTC(2026, 10, 9, 12));
+    const { relay, connect, http } = fakeRelay();
+    const detach = attachLeaderEndpoints(http, { relay, serverVersion: '1.0.0' });
+    try {
+      connect('s-1', 'Brand');
+      const dropped = connect('s-2', 'Marketing', 'Cover');
+      (dropped.socket as unknown as EventEmitter).emit(
+        'close',
+        4000,
+        Buffer.from('heartbeat timeout'),
+      );
+      let pings = 0;
+      const toLeader = viaLeader(http);
+      const f = new Follower({
+        leaderUrl: 'http://127.0.0.1:3055',
+        fetch: async (...args) => {
+          pings += 1;
+          return toLeader(...args);
+        },
+      });
+
+      const view = await f.listSessionView();
+
+      expect(pings).toBe(1);
+      expect(view.connected.map(s => s.id)).toEqual(['s-1']);
+      expect(view.reconnecting).toEqual([
+        {
+          id: 's-2',
+          fileName: 'Marketing',
+          pageName: 'Cover',
+          pluginVersion: '1.0.0',
+          disconnectedAt: Date.UTC(2026, 10, 9, 12),
+          reason: { code: 4000, closedBy: 'plugin', detail: 'heartbeat timeout' },
+        },
+      ]);
+    } finally {
+      detach();
+      await relay.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("lists the leader's server build and each file's plugin build through a follower", async () => {
+    const { relay, connect, http } = fakeRelay();
+    const detach = attachLeaderEndpoints(http, {
+      relay,
+      serverVersion: '1.0.0',
+      buildId: 1_762_732_800_000,
+    });
+    try {
+      connect('s-new', 'Brand', null, 1_762_646_400_000);
+      connect('s-old', 'Marketing');
+      // The follower runs a different build: list_files must name the leader's, which owns the
+      // plugin sessions and runs the calls.
+      const f = new Follower({
+        leaderUrl: 'http://127.0.0.1:3055',
+        fetch: viaLeader(http),
+        buildId: 1_762_819_200_000,
+      });
+
+      const view = await f.listSessionView();
+      const { serverBuild, files } = await handleListFiles(
+        view.connected,
+        async (sessionId): Promise<ListFilesResult> => ({
+          files: [{ fileKey: null, fileName: sessionId, currentPage: { id: 'p', name: 'P' } }],
+        }),
+        view.reconnecting,
+        view.leaderUnreachable,
+        view.leaderBuildId,
+      );
+
+      expect(serverBuild).toBe('1762732800000 (2025-11-10T00:00:00.000Z)');
+      expect(Object.fromEntries(files.map(file => [file.sessionId, file.pluginBuild]))).toEqual({
+        's-new': '1762646400000 (2025-11-09T00:00:00.000Z)',
+        's-old': 'unknown',
+      });
+    } finally {
+      detach();
+      await relay.stop();
+    }
+  });
+
+  it('says why the session list is empty when /ping cannot reach the leader', async () => {
+    // Without the reason an unreachable leader reads exactly like "no plugin is connected".
+    const f = new Follower({
+      leaderUrl: 'http://127.0.0.1:3055',
+      fetch: async () => {
+        throw new TypeError('fetch failed', {
+          cause: Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:3055'), {
+            code: 'ECONNREFUSED',
+          }),
+        });
+      },
+    });
+
+    const view = await f.listSessionView();
+
+    expect(view.connected).toEqual([]);
+    expect(view.reconnecting).toEqual([]);
+    expect(view.leaderUnreachable).toContain('ECONNREFUSED');
+  });
+
+  it("names no server build, not the follower's own, when the leader is unreachable", async () => {
+    const f = new Follower({
+      leaderUrl: 'http://127.0.0.1:3055',
+      buildId: 1_762_819_200_000,
+      fetch: async () => {
+        throw new TypeError('fetch failed');
+      },
+    });
+
+    const view = await f.listSessionView();
+    const { serverBuild } = await handleListFiles(
+      view.connected,
+      async () => ({ files: [] }),
+      view.reconnecting,
+      view.leaderUnreachable,
+      view.leaderBuildId,
+    );
+
+    expect(serverBuild).toBe('unknown');
+  });
+
+  it('names no server build when the leader predates build ids', async () => {
+    const f = new Follower({
+      leaderUrl: 'http://127.0.0.1:3055',
+      buildId: 1_762_819_200_000,
+      fetch: async () =>
+        Response.json({ ok: true, serverVersion: '1.0.0', sessions: [], reconnecting: [] }),
+    });
+
+    const view = await f.listSessionView();
+    const { serverBuild } = await handleListFiles(
+      view.connected,
+      async () => ({ files: [] }),
+      view.reconnecting,
+      view.leaderUnreachable,
+      view.leaderBuildId,
+    );
+
+    expect(serverBuild).toBe('unknown');
+  });
+
+  it('says the leader is unreadable when its /ping sessions field is not a list', async () => {
+    const f = new Follower({
+      leaderUrl: 'http://127.0.0.1:3055',
+      fetch: async () =>
+        Response.json({ ok: true, serverVersion: '1.0.0', sessions: { id: 's-1' } }),
+    });
+
+    const view = await f.listSessionView();
+
+    expect(view.connected).toEqual([]);
+    expect(view.leaderUnreachable).toMatch(/sessions/);
+  });
+
+  it('describes a non-list sessions value by its type instead of echoing it', async () => {
+    // Whatever answers /ping decides this value, and the reason lands verbatim in list_files.
+    const huge = { blob: 'x'.repeat(100_000) };
+    const f = new Follower({
+      leaderUrl: 'http://127.0.0.1:3055',
+      fetch: async () => Response.json({ ok: true, serverVersion: '1.0.0', sessions: huge }),
+    });
+
+    const reason = (await f.listSessionView()).leaderUnreachable!;
+
+    expect(reason).toContain('an object');
+    expect(reason).not.toContain('xxxx');
+    expect(reason.length).toBeLessThan(200);
+  });
+
+  it('reports a reachable leader with no plugins as plain empty lists', async () => {
+    const f = new Follower({
+      leaderUrl: 'http://127.0.0.1:3055',
+      fetch: async () =>
+        Response.json({ ok: true, serverVersion: '1.0.0', sessions: [], reconnecting: [] }),
+    });
+
+    expect(await f.listSessionView()).toEqual({ connected: [], reconnecting: [] });
   });
 
   it('sendRpc threads sessionId so the leader pins the call', async () => {

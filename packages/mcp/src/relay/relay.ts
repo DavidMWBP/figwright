@@ -24,8 +24,13 @@ import {
 import { WebSocketServer, type WebSocket } from 'ws';
 
 import { isAllowedHost, isAllowedWsOrigin } from '../local-access.js';
-import type { PluginSessionInfo } from '../routing/sessions.js';
-import { DEFAULT_DISCONNECT_GRACE_MS, type Session, SessionManager } from './session.js';
+import type { PluginSessionInfo, ReconnectingSessionInfo } from '../routing/sessions.js';
+import {
+  DEFAULT_DISCONNECT_GRACE_MS,
+  type DisconnectReason,
+  type Session,
+  SessionManager,
+} from './session.js';
 
 export interface RelayOptions {
   serverVersion: string;
@@ -86,8 +91,11 @@ export class Relay {
   private readonly wss: WebSocketServer;
   private readonly opts: Required<Omit<RelayOptions, 'server'>>;
   private readonly pending = new Map<string, Pending>();
-  /** Sockets this relay closed itself — their close code says nothing about the plugin's run. */
-  private readonly closedByServer = new WeakSet<WebSocket>();
+  /**
+   * Sockets this relay closed itself, with the code and reason it sent — their close code says
+   * nothing about the plugin's run, and a dead peer never echoes them back.
+   */
+  private readonly closedByServer = new WeakMap<WebSocket, { code: number; detail: string }>();
   private heartbeatDeferrals = 0;
   private lastRequestAtMs = 0;
 
@@ -329,13 +337,39 @@ export class Relay {
     return this.sessions
       .connected()
       .toSorted((a, b) => b.lastActivityAt - a.lastActivityAt)
-      .map(s => ({
+      .map(s => {
+        const info: PluginSessionInfo = {
+          id: s.id,
+          fileName: s.fileName,
+          pageName: s.pageName,
+          lastActivityAt: s.lastActivityAt,
+          pluginVersion: s.clientVersion,
+        };
+        // Absent, not undefined, for a plugin older than the field: the follower reads it off JSON.
+        if (s.clientBuildId !== undefined) info.pluginBuildId = s.clientBuildId;
+        return info;
+      });
+  }
+
+  /**
+   * Every session inside its disconnect grace window, most recent drop first. Kept out of
+   * `listSessionInfo` so file targeting and routing never see it; `list_files` shows it so a file
+   * whose socket just dropped reads as reconnecting rather than closed.
+   */
+  listReconnectingInfo(): readonly ReconnectingSessionInfo[] {
+    const out: ReconnectingSessionInfo[] = [];
+    for (const s of this.sessions.reconnecting()) {
+      if (s.disconnectedAt === null || s.disconnectReason === null) continue;
+      out.push({
         id: s.id,
         fileName: s.fileName,
         pageName: s.pageName,
-        lastActivityAt: s.lastActivityAt,
         pluginVersion: s.clientVersion,
-      }));
+        disconnectedAt: s.disconnectedAt,
+        reason: s.disconnectReason,
+      });
+    }
+    return out.toSorted((a, b) => b.disconnectedAt - a.disconnectedAt);
   }
 
   /**
@@ -448,20 +482,30 @@ export class Relay {
       this.handleEnvelope(session, envelope);
     });
 
-    socket.on('close', (code: number) => {
+    socket.on('close', (code: number, reasonBytes?: Buffer) => {
       clearTimeout(helloTimeout);
       if (session === undefined) return;
-      if (!this.closedByServer.has(socket) && PLUGIN_ENDED_CODES.has(code)) {
+      const byServer = this.closedByServer.get(socket);
+      if (byServer === undefined && PLUGIN_ENDED_CODES.has(code)) {
         // False when this is the old socket of a session that has already resumed on a new one.
         if (this.endSession(session)) {
           this.opts.log(`[relay] session ${session.id} ended (plugin closed, code ${code})`);
         }
         return;
       }
+      const text = reasonBytes?.toString('utf8') ?? '';
+      const reason: DisconnectReason =
+        byServer !== undefined
+          ? { closedBy: 'server', ...byServer }
+          : {
+              code,
+              closedBy: code === 1006 ? 'lost' : 'plugin',
+              detail: text === '' ? null : text,
+            };
       this.opts.log(
         `[relay] session ${session.id} disconnected (code ${code}, grace ${this.opts.disconnectGraceMs}ms)`,
       );
-      this.sessions.markDisconnected(session, this.opts.disconnectGraceMs);
+      this.sessions.markDisconnected(session, this.opts.disconnectGraceMs, reason);
     });
 
     socket.on('error', err => {
@@ -526,6 +570,9 @@ export class Relay {
       id: env.sessionId,
       socket,
       clientVersion: parsed.data.clientVersion,
+      ...(parsed.data.clientBuildId === undefined
+        ? {}
+        : { clientBuildId: parsed.data.clientBuildId }),
     });
 
     session.heartbeat = new HeartbeatMonitor({
@@ -548,7 +595,7 @@ export class Relay {
         this.opts.log(`[relay] session ${session.id} heartbeat timeout`);
         // Marked first: this close carries 1001 too, but the plugin on the other end is still
         // running and will resume under the same id, so it must get the grace window.
-        this.closedByServer.add(socket);
+        this.closedByServer.set(socket, { code: 1001, detail: 'heartbeat timeout' });
         socket.close(1001, 'heartbeat timeout');
       },
     });

@@ -17,7 +17,12 @@ import { Relay } from '../src/relay/relay.js';
 export const fakeRelay = () => {
   const http = createServer();
   const relay = new Relay({ server: http, serverVersion: '1.0.0' });
-  const connect = (id: string, fileName: string, pageName: string | null = null) => {
+  const connect = (
+    id: string,
+    fileName: string,
+    pageName: string | null = null,
+    clientBuildId?: number,
+  ) => {
     const socket = new EventEmitter();
     const sent: Envelope[] = [];
     let requested: (env: Envelope) => void = () => {};
@@ -41,7 +46,13 @@ export const fakeRelay = () => {
         id: 'hello',
         sessionId: id,
         method: SystemMethod.Hello,
-        params: { clientType: 'plugin', clientVersion: '1.0.0', protocolVersion: PROTOCOL_VERSION },
+        params: {
+          clientType: 'plugin',
+          clientVersion: '1.0.0',
+          protocolVersion: PROTOCOL_VERSION,
+          // Omitted, not undefined, when not given: that is the hello a plugin older than the field sends.
+          ...(clientBuildId === undefined ? {} : { clientBuildId }),
+        },
       }),
     );
     const session = relay.sessions.get(id)!;

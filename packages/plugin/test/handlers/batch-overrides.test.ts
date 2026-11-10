@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { captureOverrideGuard, restoreOverrideGuard } from '../../src/handlers/batch-overrides.js';
+import { withInstanceIdLookup } from '../../src/node-lookup.js';
+import { CONNECTION_ERROR } from '../read-retry-fake.js';
 
 type Override = { id: string; overriddenFields: string[] };
 type Node = Record<string, unknown> & { id: string };
@@ -64,6 +66,32 @@ const makeInstance = () => {
   const markRaw = (id: string, field: string): void => mark(id, field);
   return { instance, sublayer, store, figmaCtx, markRaw };
 };
+
+it('retries nested main-component capture and retains the original swap identity', async () => {
+  vi.useFakeTimers();
+  try {
+    const { store, figmaCtx, instance } = makeInstance();
+    const lookup = vi
+      .fn<() => Promise<unknown>>()
+      .mockRejectedValueOnce(new Error(CONNECTION_ERROR))
+      .mockResolvedValue({ id: 'M:A' });
+    store.set('nested', {
+      id: 'nested',
+      type: 'INSTANCE',
+      parent: instance,
+      getMainComponentAsync: lookup,
+    });
+    const capturing = captureOverrideGuard(withInstanceIdLookup(figmaCtx), ['I']).catch(
+      error => error,
+    );
+    await vi.runAllTimersAsync();
+    const guards = await capturing;
+    expect(guards[0]?.swaps).toEqual([{ id: 'nested', mainId: 'M:A' }]);
+    expect(lookup).toHaveBeenCalledTimes(2);
+  } finally {
+    vi.useRealTimers();
+  }
+});
 
 describe('instance override guard', () => {
   it('resets the instance and re-applies only the overrides it had, when an undo left a mark', async () => {

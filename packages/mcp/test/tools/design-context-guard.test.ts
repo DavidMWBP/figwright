@@ -105,6 +105,10 @@ describe('handleDesignContext (the public-path guard)', () => {
 
   it('downgrades an oversized full payload, dropping styling and keeping the tree', async () => {
     const payload = oversizedFull();
+    payload.nodes[0]!.type = 'INSTANCE';
+    payload.nodes[0]!.mainComponentUnavailable = {
+      message: 'getMainComponentAsync(root) failed: unavailable',
+    };
     expect(estimateResultTokens(JSON.stringify(payload))).toBeGreaterThan(
       DESIGN_CONTEXT_TOKEN_BUDGET,
     );
@@ -116,6 +120,9 @@ describe('handleDesignContext (the public-path guard)', () => {
     expect(r.sectionPlan).toBeUndefined();
     expect(r.globalVars).toBeUndefined();
     expect(r.nodes[0]?.children).toHaveLength(2);
+    expect(r.nodes[0]?.mainComponentUnavailable).toEqual(
+      payload.nodes[0]?.mainComponentUnavailable,
+    );
     // Instance→component identity survives the downgrade (plugin compact carries it too);
     // the full-only resolved mainComponent object does not.
     expect(r.nodes[0]?.children?.[1]?.mainComponentId).toBe('c:9');

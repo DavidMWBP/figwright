@@ -145,6 +145,27 @@ it.each([
   }
 });
 
+it('stops batch navigation at a page-load timeout during capture before the handler applies', async () => {
+  vi.useFakeTimers();
+  try {
+    const f = unloadedPage();
+    f.loadAsync.mockRejectedValue(CONNECTION_ERROR);
+    const running = Promise.resolve(
+      createSandboxHandlers(f.figmaCtx).batch!({
+        ops: [{ tool: 'navigate_to_page', params: { pageId: f.page.id } }],
+      }),
+    ).catch(error => error);
+    await vi.runAllTimersAsync();
+    const error = (await running) as Error;
+    expect(error.message).toContain('capture failed before any op was applied');
+    expect(error.message).toContain(`PageNode.loadAsync(P:2) failed: ${CONNECTION_ERROR}`);
+    expect(f.loadAsync).toHaveBeenCalledTimes(2);
+    expect(f.figmaCtx.setCurrentPageAsync).not.toHaveBeenCalled();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it('captures and renames an unloaded page', async () => {
   const f = unloadedPage();
   let name = 'Before';
@@ -2377,6 +2398,108 @@ describe('batch inverses for instances and text styles', () => {
     store.set('M:B', mains.B!);
     return { instance, figmaCtx, mains, current: () => ({ main, props }) };
   };
+
+  it.each(['set_instance_properties', 'swap_component', 'bind_component_property'])(
+    'bounds %s main-component capture retries and keeps the reserve',
+    async tool => {
+      vi.useFakeTimers();
+      vi.setSystemTime(0);
+      try {
+        const { instance, figmaCtx, mains } = makeInstance();
+        const lookup = vi
+          .fn<() => Promise<unknown>>()
+          .mockRejectedValueOnce(new Error(CONNECTION_ERROR))
+          .mockResolvedValue(mains.A);
+        instance.getMainComponentAsync = lookup;
+        const apply = vi.fn<() => Promise<unknown>>(async () => ({ ok: true }));
+        const ctx = withInstanceIdLookup(figmaCtx);
+        const handler = createBatchHandler(ctx, { [tool]: apply });
+        const params =
+          tool === 'bind_component_property'
+            ? { nodeId: 'I:1', field: 'mainComponent', propertyId: 'Icon#1:0' }
+            : { instanceId: 'I:1', properties: { State: 'B' }, componentId: 'M:B' };
+        const reading = Promise.resolve(handler({ ops: [{ tool, params }] })).catch(error => error);
+        await vi.runAllTimersAsync();
+        expect(await reading).toMatchObject({ ok: true });
+        expect(lookup).toHaveBeenCalledTimes(2);
+        expect(apply).toHaveBeenCalledOnce();
+
+        // A fresh invocation's first platform rejection arrives too close to its capture stopAt.
+        lookup.mockReset().mockImplementation(async () => {
+          vi.setSystemTime(59_750);
+          throw new Error(CONNECTION_ERROR);
+        });
+        apply.mockClear();
+        vi.setSystemTime(0);
+        const reserved = createBatchHandler(withInstanceIdLookup(figmaCtx), { [tool]: apply });
+        await expect(reserved({ ops: [{ tool, params }] })).rejects.toThrow(
+          `getMainComponentAsync(I:1) failed: ${CONNECTION_ERROR}`,
+        );
+        expect(lookup).toHaveBeenCalledOnce();
+        expect(apply).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it('fails capture explicitly after two main-component failures before applying', async () => {
+    vi.useFakeTimers();
+    try {
+      const { instance, figmaCtx } = makeInstance();
+      const lookup = vi.fn<() => Promise<never>>(async () => {
+        throw new Error(CONNECTION_ERROR);
+      });
+      instance.getMainComponentAsync = lookup;
+      const apply = vi.fn<() => Promise<unknown>>(async () => ({ ok: true }));
+      const handler = createBatchHandler(withInstanceIdLookup(figmaCtx), { swap_component: apply });
+      const reading = Promise.resolve(
+        handler({
+          ops: [{ tool: 'swap_component', params: { instanceId: 'I:1', componentId: 'M:B' } }],
+        }),
+      ).catch(error => error);
+      await vi.runAllTimersAsync();
+      expect(await reading).toMatchObject({
+        message: `batch: capture failed before any op was applied: getMainComponentAsync(I:1) failed: ${CONNECTION_ERROR} Read failed twice.`,
+      });
+      expect(lookup).toHaveBeenCalledTimes(2);
+      expect(apply).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not retry main-component lookup during swap undo', async () => {
+    vi.useFakeTimers();
+    try {
+      const { instance, figmaCtx, mains } = makeInstance();
+      const lookup = vi
+        .fn<() => Promise<unknown>>()
+        .mockResolvedValueOnce(mains.A)
+        .mockRejectedValue(new Error(CONNECTION_ERROR));
+      instance.getMainComponentAsync = lookup;
+      const ctx = withInstanceIdLookup(figmaCtx);
+      const handler = createBatchHandler(ctx, {
+        swap_component: createSwapComponentHandler(ctx),
+        set_fills: createSetFillsHandler(ctx),
+      });
+      const reading = Promise.resolve(
+        handler({
+          ops: [
+            { tool: 'swap_component', params: { instanceId: 'I:1', componentId: 'M:B' } },
+            FAIL,
+          ],
+        }),
+      ).catch(error => error);
+      await vi.runAllTimersAsync();
+      expect(await reading).toMatchObject({
+        message: expect.stringContaining('getMainComponentAsync(I:1) failed:'),
+      });
+      expect(lookup).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it('puts instance properties back — a bound one as its alias — and the main they chose', async () => {
     const { instance, figmaCtx, mains, current } = makeInstance();

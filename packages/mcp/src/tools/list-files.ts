@@ -1,7 +1,9 @@
 import type { ListFilesResult } from '@figwright/shared';
 import { z } from 'zod';
 
-import type { PluginSessionInfo } from '../routing/sessions.js';
+import { describeBuild } from '../build-id.js';
+import type { DisconnectReason } from '../relay/session.js';
+import type { PluginSessionInfo, ReconnectingSessionInfo } from '../routing/sessions.js';
 import { getFileTarget } from '../routing/target.js';
 import type { ToolSpec } from './spec.js';
 
@@ -10,14 +12,29 @@ export const LIST_FILES_TOOL_NAME = 'list_files';
 export const listFilesTool: ToolSpec = {
   name: LIST_FILES_TOOL_NAME,
   description:
-    'Return every Figma file that currently has the Figwright plugin open, as { files: [{ sessionId, ' +
-    'fileName, currentPage, pluginVersion, routed, bound, duplicateName?, error? }] }. More than one ' +
+    'Return every Figma file that currently has the Figwright plugin open, as { serverBuild, files: ' +
+    '[{ sessionId, fileName, currentPage, pluginVersion, pluginBuild, routed, bound, duplicateName?, ' +
+    'error? }] }. serverBuild and pluginBuild name the exact build (epoch ms with its UTC time; ' +
+    '"unknown" for a plugin too old to send one), since builds of one release share a version. ' +
+    'serverBuild is the build of the Figwright server process that holds the plugin connections ' +
+    'and runs the calls, which may not be the one you are talking to; "unknown" when that ' +
+    'process could not be reached or is too old to report it. ' +
+    'More than one ' +
     'entry means more than one file is reachable, and calls follow whichever one the user last ' +
     'touched (routed: true) — which changes under you when they switch tabs. Claim one with ' +
     'use_file so this agent stays in it. bound marks the file this agent has claimed. ' +
     'duplicateName marks entries sharing a name (Figma allows it; "x (Copy)" is the usual way), ' +
     'for which use_file needs the sessionId rather than the name. fileKey is always null: only ' +
-    'private-org plugins can read it.',
+    'private-org plugins can read it. reconnecting: [{ sessionId, fileName, pageName, ' +
+    'pluginVersion, droppedMsAgo, reason: { code, closedBy, detail } }] lists plugins whose ' +
+    'connection dropped within the last 30s and may resume under the same sessionId; no call ' +
+    'reaches them until they do, and they leave the list when the window ends. closedBy is ' +
+    '"server" (the server stopped hearing the plugin), "plugin" (the plugin closed it; code 4000 ' +
+    'means it stopped hearing the server) or "lost" (code 1006: dropped with no close frame). ' +
+    'A plugin closed or reloaded in Figma is not listed: its next run gets a new sessionId. ' +
+    'leaderUnreachable, present only when set, means this server could not read the plugin ' +
+    'sessions from the Figwright leader process and says why; the empty lists then do not mean ' +
+    'no plugin is connected.',
   inputSchema: z.object({}),
   // Still a read on the wire, under its own name: the server dispatches `list_files` to each
   // connected session and the plugin's handler is unchanged. Only the aggregation across sessions
@@ -36,6 +53,8 @@ export interface ConnectedFile {
   fileName: string | null;
   currentPage: { id: string; name: string } | null;
   pluginVersion: string;
+  /** The plugin's build stamp with its UTC build time; "unknown" for an older plugin. */
+  pluginBuild: string;
   /** Where an unbound call would go right now — the file the user last interacted with. */
   routed: boolean;
   /** The file this server process has claimed via use_file. */
@@ -44,6 +63,19 @@ export interface ConnectedFile {
   duplicateName?: boolean;
   /** This session did not answer; the entry is what the server knew about it. */
   error?: string;
+}
+
+/**
+ * A file whose plugin socket dropped inside the disconnect grace window. Reported from what the
+ * relay last knew, never probed: no call can reach it until the same session id reconnects.
+ */
+export interface ReconnectingFile {
+  sessionId: string;
+  fileName: string | null;
+  pageName: string | null;
+  pluginVersion: string;
+  droppedMsAgo: number;
+  reason: DisconnectReason;
 }
 
 /** One session after asking its plugin what file it is in. */
@@ -133,7 +165,19 @@ export const namedSessions = async (
 export const handleListFiles = async (
   sessions: readonly PluginSessionInfo[],
   dispatch: SessionDispatch,
-): Promise<{ files: ConnectedFile[] }> => {
+  reconnectingSessions: readonly ReconnectingSessionInfo[] = [],
+  leaderUnreachable?: string,
+  /**
+   * Build stamp of the leader that holds the sessions and runs the calls; undefined ("unknown")
+   * when it could not be read or predates build ids. Never a follower's own.
+   */
+  serverBuildId?: number,
+): Promise<{
+  serverBuild: string;
+  files: ConnectedFile[];
+  reconnecting: ReconnectingFile[];
+  leaderUnreachable?: string;
+}> => {
   const target = getFileTarget();
   // Sessions arrive newest-activity-first, so the first is the one live routing would pick.
   const routedId = sessions[0]?.id;
@@ -142,6 +186,7 @@ export const handleListFiles = async (
     const file: ConnectedFile = {
       sessionId: probed.session.id,
       pluginVersion: probed.session.pluginVersion,
+      pluginBuild: describeBuild(probed.session.pluginBuildId),
       routed: probed.session.id === routedId,
       bound: probed.session.id === target?.sessionId,
       fileKey: probed.fileKey,
@@ -167,5 +212,19 @@ export const handleListFiles = async (
     if ((counts.get(f.fileName.trim().toLowerCase()) ?? 0) > 1) f.duplicateName = true;
   }
 
-  return { files };
+  const now = Date.now();
+  const reconnecting = reconnectingSessions.map(s => ({
+    sessionId: s.id,
+    fileName: s.fileName,
+    pageName: s.pageName,
+    pluginVersion: s.pluginVersion,
+    droppedMsAgo: Math.max(0, now - s.disconnectedAt),
+    reason: s.reason,
+  }));
+
+  // Absent rather than undefined on the happy path, for the same reason as `error` above.
+  const serverBuild = describeBuild(serverBuildId);
+  return leaderUnreachable === undefined
+    ? { serverBuild, files, reconnecting }
+    : { serverBuild, files, reconnecting, leaderUnreachable };
 };

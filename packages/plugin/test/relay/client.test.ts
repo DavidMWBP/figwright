@@ -168,6 +168,28 @@ describe('RelayClient', () => {
     expect(params.protocolVersion).toBe(PROTOCOL_VERSION);
   });
 
+  it('sends its build id in the hello so the server can name the exact plugin build', async () => {
+    const { WS, sockets } = buildFakeFactory(sock => {
+      sock.fireOpen();
+      const req = decodeEnvelope(sock.sent[0]!) as RequestEnvelope;
+      sock.fireReceive(
+        createResponse({ id: req.id, sessionId: req.sessionId, result: helloResult() }),
+      );
+    });
+    const client = new RelayClient({
+      ports: [3055],
+      clientVersion: '0.0.0',
+      clientBuildId: 1_762_646_400_000,
+      WS,
+    });
+
+    await client.connect();
+    client.disconnect();
+
+    const helloReq = decodeEnvelope(sockets[0]!.sent[0]!) as RequestEnvelope;
+    expect((helloReq.params as HelloParams).clientBuildId).toBe(1_762_646_400_000);
+  });
+
   it('falls back to next port when first port refuses', async () => {
     const { WS, sockets } = buildFakeFactory((sock, port) => {
       if (port === 3055) {

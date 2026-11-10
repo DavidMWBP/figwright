@@ -142,6 +142,9 @@ export const attachLeaderEndpoints = (http: HttpServer, deps: LeaderEndpointDeps
         // of its own. `plugins` above is this list's length and stays for older followers, which
         // read it and would not know what to do with this.
         sessions: relay.listSessionInfo(),
+        // Sessions inside their disconnect grace window, for `list_files`. Separate from `sessions`
+        // so a follower's file targeting cannot pick one; an older follower ignores the field.
+        reconnecting: relay.listReconnectingInfo(),
       });
       return;
     }

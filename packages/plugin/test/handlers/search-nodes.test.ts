@@ -1,8 +1,32 @@
 import type { SearchNodesResult } from '@figwright/shared';
 import { describe, expect, it, vi } from 'vitest';
 
+import { createSandboxHandlers } from '../../src/handlers/registry.js';
 import { createSearchNodesHandler } from '../../src/handlers/search-nodes.js';
 import { unloadedPage } from '../page-fake.js';
+import { CONNECTION_ERROR } from '../read-retry-fake.js';
+
+it('reports the timed-out page without switching it through the registered search tool', async () => {
+  vi.useFakeTimers();
+  try {
+    const f = unloadedPage();
+    f.loadAsync.mockRejectedValue(CONNECTION_ERROR);
+    const running = Promise.resolve(
+      createSandboxHandlers(f.figmaCtx).search_nodes!({
+        root: f.page.id,
+        type: 'FRAME',
+      }),
+    ).catch(error => error);
+    await vi.runAllTimersAsync();
+    const error = (await running) as Error;
+    expect(error.message).toContain('page "Before" (P:2)');
+    expect(error.message).toContain('current page still answers');
+    expect(f.getNodeByIdAsync).toHaveBeenCalledExactlyOnceWith('P:1');
+    expect(f.figmaCtx.setCurrentPageAsync).not.toHaveBeenCalled();
+  } finally {
+    vi.useRealTimers();
+  }
+});
 
 it('loads a page from root.children before accessing it', async () => {
   const f = unloadedPage();

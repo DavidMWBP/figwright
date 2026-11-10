@@ -1,5 +1,5 @@
 import type { ListFilesResult } from '@figwright/shared';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { PluginSessionInfo } from '../../src/routing/sessions.js';
 import { clearFileTarget, setFileTarget } from '../../src/routing/target.js';
@@ -81,7 +81,80 @@ describe('handleListFiles', () => {
     expect(files[1]?.error).toMatch(/timeout/);
   });
 
-  it('is an empty list when no plugin is connected', async () => {
-    expect(await handleListFiles([], replying({}))).toEqual({ files: [] });
+  it('is two empty lists when no plugin is connected or reconnecting', async () => {
+    expect(await handleListFiles([], replying({}), [], undefined, 0)).toEqual({
+      serverBuild: '0 (unbundled)',
+      files: [],
+      reconnecting: [],
+    });
+  });
+
+  it('names the server build and each file’s plugin build, unknown for an older plugin', async () => {
+    const result = await handleListFiles(
+      [
+        { ...session('s-1', 'Brand'), pluginBuildId: 1_762_646_400_000 },
+        session('s-2', 'Marketing'),
+      ],
+      replying({ 's-1': 'Brand', 's-2': 'Marketing' }),
+      [],
+      undefined,
+      1_762_732_800_000,
+    );
+
+    expect(result.serverBuild).toBe('1762732800000 (2025-11-10T00:00:00.000Z)');
+    expect(result.files.map(f => [f.sessionId, f.pluginBuild])).toEqual([
+      ['s-1', '1762646400000 (2025-11-09T00:00:00.000Z)'],
+      ['s-2', 'unknown'],
+    ]);
+  });
+
+  it('says the leader is unreachable, and why, instead of only listing nothing', async () => {
+    const reason = '/ping to http://127.0.0.1:3055 failed: fetch failed';
+    expect(await handleListFiles([], replying({}), [], reason)).toEqual({
+      serverBuild: 'unknown',
+      files: [],
+      reconnecting: [],
+      leaderUnreachable: reason,
+    });
+  });
+
+  it('lists a dropped session apart from the connected one, with how long ago and why', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(Date.UTC(2026, 10, 9, 12, 0, 12));
+      const asked: string[] = [];
+      const dispatch: SessionDispatch = async (sessionId, ...rest) => {
+        asked.push(sessionId);
+        return replying({ 's-1': 'Brand' })(sessionId, ...rest);
+      };
+      const reason = { code: 1001, closedBy: 'server', detail: 'heartbeat timeout' } as const;
+
+      const result = await handleListFiles([session('s-1', 'Brand')], dispatch, [
+        {
+          id: 's-2',
+          fileName: 'Marketing',
+          pageName: 'Cover',
+          pluginVersion: '0.5.0',
+          disconnectedAt: Date.UTC(2026, 10, 9, 12, 0, 5),
+          reason,
+        },
+      ]);
+
+      // The dropped one is not a file calls can reach, so it is neither asked nor routed to.
+      expect(asked).toEqual(['s-1']);
+      expect(result.files.map(f => [f.sessionId, f.routed])).toEqual([['s-1', true]]);
+      expect(result.reconnecting).toEqual([
+        {
+          sessionId: 's-2',
+          fileName: 'Marketing',
+          pageName: 'Cover',
+          pluginVersion: '0.5.0',
+          droppedMsAgo: 7_000,
+          reason,
+        },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -1,4 +1,4 @@
-import { createError, ErrorCode } from '@figwright/shared';
+import { createError, createResponse, ErrorCode } from '@figwright/shared';
 import { describe, expect, it } from 'vitest';
 
 import type { Follower } from '../../src/election/follower.js';
@@ -149,6 +149,70 @@ describe('ping tool', () => {
     expect(result.sessions?.routedPageName).toBe('Cover');
     // All sessions sorted newest-active first.
     expect(result.sessions?.all.map(s => s.id)).toEqual(['sess-b', 'sess-a']);
+  });
+
+  describe('which build each half runs', () => {
+    // 2025-11-09T00:00:00Z and the day after, as epoch ms.
+    const NOV_9 = 1_762_646_400_000;
+    const NOV_10 = 1_762_732_800_000;
+
+    /** Ping a real relay, answering the plugin request on whichever session routing picked. */
+    const pingRelay = async (
+      buildId: number | undefined,
+      plugins: readonly { id: string; clientBuildId?: number }[],
+    ): Promise<Awaited<ReturnType<typeof handlePing>>> => {
+      const { relay, connect } = fakeRelay();
+      const node = makeNode({
+        role: NodeRole.Leader,
+        isLeader: () => true,
+        getLeader: () => ({ relay }) as unknown as ReturnType<Node['getLeader']>,
+      });
+      try {
+        const connected = plugins.map(p => connect(p.id, `File ${p.id}`, null, p.clientBuildId));
+        const result = handlePing({
+          node,
+          follower: makeFollower({}),
+          serverVersion: '1.0.0',
+          ...(buildId === undefined ? {} : { buildId }),
+        });
+        const request = await Promise.race(connected.map(c => c.request));
+        connected
+          .find(c => c.sent.includes(request))!
+          .receive(createResponse({ id: request.id, sessionId: request.sessionId, result: {} }));
+        return await result;
+      } finally {
+        await relay.stop();
+      }
+    };
+
+    it('names each session’s plugin build when two files run different builds', async () => {
+      const result = await pingRelay(NOV_10, [
+        { id: 'sess-a', clientBuildId: NOV_9 },
+        { id: 'sess-b', clientBuildId: NOV_10 },
+      ]);
+
+      expect(result.hop).toBe('e2e');
+      expect(result.server.buildId).toBe(NOV_10);
+      expect(result.server.build).toBe('1762732800000 (2025-11-10T00:00:00.000Z)');
+      expect(Object.fromEntries(result.sessions!.all.map(s => [s.id, s.pluginBuild]))).toEqual({
+        'sess-a': '1762646400000 (2025-11-09T00:00:00.000Z)',
+        'sess-b': '1762732800000 (2025-11-10T00:00:00.000Z)',
+      });
+    });
+
+    it('shows a plugin older than the build id as unknown', async () => {
+      const result = await pingRelay(NOV_10, [{ id: 'sess-old' }]);
+
+      expect(result.sessions!.all).toEqual([expect.objectContaining({ pluginBuild: 'unknown' })]);
+    });
+
+    it('says an unbundled server (build id 0) is unbundled rather than a 1970 date', async () => {
+      const result = await pingRelay(undefined, [{ id: 'sess-a', clientBuildId: 0 }]);
+
+      expect(result.server.buildId).toBe(0);
+      expect(result.server.build).toBe('0 (unbundled)');
+      expect(result.sessions!.all[0]!.pluginBuild).toBe('0 (unbundled)');
+    });
   });
 
   it('falls back to server-only when dispatch throws (follower path)', async () => {

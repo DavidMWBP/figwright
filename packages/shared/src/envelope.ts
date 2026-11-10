@@ -62,6 +62,10 @@ export const HelloParamsSchema = z.object({
   // String, not a literal: a version-mismatched plugin must still parse so the relay can reject it
   // with a clear ProtocolMismatch message (see relay.handleHello), not a generic schema-parse failure.
   protocolVersion: z.string(),
+  // Build stamp of the plugin's UI bundle (epoch ms; 0 when built without the define). Every dev
+  // build reports the same `clientVersion`, so this is what names the exact build. Optional: a
+  // plugin older than the field omits it and is shown as unknown, so it needs no protocol bump.
+  clientBuildId: z.number().optional(),
 });
 export type HelloParams = z.infer<typeof HelloParamsSchema>;
 

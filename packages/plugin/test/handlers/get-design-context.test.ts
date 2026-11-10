@@ -1,7 +1,9 @@
 import type { GetDesignContextResult } from '@figwright/shared';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createGetDesignContextHandler } from '../../src/handlers/get-design-context.js';
+import { withInstanceIdLookup } from '../../src/node-lookup.js';
+import { CONNECTION_ERROR } from '../read-retry-fake.js';
 
 const node = (over: Record<string, unknown>): SceneNode =>
   ({
@@ -43,6 +45,46 @@ const fakeFigma = (opts: {
   }) as unknown as typeof figma;
 
 describe('get_design_context handler', () => {
+  it.each(['success', 'twice', 'other'] as const)(
+    'bounds required component identity lookup: %s',
+    async outcome => {
+      vi.useFakeTimers();
+      try {
+        const lookup = vi
+          .fn<() => Promise<unknown>>()
+          .mockRejectedValueOnce(new Error(outcome === 'other' ? 'denied' : CONNECTION_ERROR));
+        if (outcome === 'twice') lookup.mockRejectedValueOnce(new Error(CONNECTION_ERROR));
+        else lookup.mockResolvedValue({ id: 'main', name: 'Button', key: 'key' });
+        const ctx = withInstanceIdLookup(
+          fakeFigma({
+            selection: [node({ id: 'I:1', type: 'INSTANCE', getMainComponentAsync: lookup })],
+          }),
+        );
+        const reading = Promise.resolve(
+          createGetDesignContextHandler(ctx)({ detail: 'full', dedupeComponents: true }),
+        ).catch(error => error);
+        await vi.runAllTimersAsync();
+        const out = await reading;
+        const expected =
+          outcome === 'success'
+            ? {
+                nodes: [
+                  {
+                    mainComponentId: 'main',
+                    mainComponent: { id: 'main', name: 'Button', key: 'key' },
+                  },
+                ],
+              }
+            : {
+                message: `getMainComponentAsync(I:1) failed: ${outcome === 'other' ? 'denied' : `${CONNECTION_ERROR} Read failed twice.`}`,
+              };
+        expect(out).toMatchObject(expected);
+        expect(lookup).toHaveBeenCalledTimes(outcome === 'other' ? 1 : 2);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
   it.each([0, 0.6])(
     'keeps corner smoothing %s on a deduped instance child override',
     async value => {

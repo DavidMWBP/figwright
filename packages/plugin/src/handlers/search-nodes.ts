@@ -27,5 +27,8 @@ export const createSearchNodesHandler =
         (wantType === null || node.type === wantType) &&
         (needle === null || node.name.toLowerCase().includes(needle)),
     );
-    return toNodeListResult(matches, await serializeFlatNodes(matches, resultCharBudget()));
+    return toNodeListResult(
+      matches,
+      await serializeFlatNodes(matches, resultCharBudget(), figmaCtx),
+    );
   };

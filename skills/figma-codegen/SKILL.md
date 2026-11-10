@@ -43,7 +43,7 @@ Run the grounded tools against the selection, then generate — **trust them ove
 1. **`get_design_context`** (detail `full`, `dedupeComponents: true`) → the structural tree with
    tokens resolved to names (`Primary/500`, `spacing/4`), styles deduped into `globalVars`, and each
    instance's `mainComponent` / `componentProperties`. This is the layout + binding source of truth.
-   Keep `dedupeComponents: true` and don't depth-limit a subtree you'll build from.
+   Keep `dedupeComponents: true` and don't depth-limit a subtree you'll build from. On a read that does not need the component (`get_node`, `get_nodes_info`), an instance whose main-component lookup still failed carries `mainComponentUnavailable: { message }` instead of `mainComponent`; its props and text stay valid, so say the component is unknown rather than guessing it from the name. `get_design_context` fails the call in that case instead. `get_nodes_info` returns `null` for a node that failed to serialize and names it under `serializationErrors` (index, nodeId, stage, message); the other nodes in that call are still valid.
    → **How to read the tree, the per-node fidelity catalog (effects, per-side borders, stroke align,
    per-corner radius, blend, masks, gradients, image-fit, auto-layout/grid, aspect-ratio,
    scroll/sticky, stack & stroke-space), Dev Mode annotations as ground truth, and grounding a page
