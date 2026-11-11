@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import type { Follower } from '../../src/election/follower.js';
 import { portConflictMessage } from '../../src/election/leader-lock.js';
 import { type Node, NodeRole } from '../../src/election/node.js';
-import { handlePing, pingTool } from '../../src/tools/ping.js';
+import { formatPingResult, handlePing, pingTool } from '../../src/tools/ping.js';
 import { fakeRelay } from '../relay-fake.js';
 import { toToolDefinition } from '../tool-schema.js';
 
@@ -149,6 +149,54 @@ describe('ping tool', () => {
     expect(result.sessions?.routedPageName).toBe('Cover');
     // All sessions sorted newest-active first.
     expect(result.sessions?.all.map(s => s.id)).toEqual(['sess-b', 'sess-a']);
+  });
+
+  describe('the routed file’s write queue', () => {
+    const pingLeader = (pluginInfo: Record<string, unknown>) =>
+      handlePing({
+        node: makeNode({
+          role: NodeRole.Leader,
+          isLeader: () => true,
+          getLeader: () =>
+            ({
+              port: 3055,
+              relay: {
+                sessions: { connected: () => [{ id: 'sess-a', lastActivityAt: 1 }] },
+                pickActiveSession: () => ({ id: 'sess-a' }),
+                skewNotice: () => null,
+                sendRequest: async () => pluginInfo,
+              },
+              http: undefined as never,
+            }) as unknown as ReturnType<Node['getLeader']>,
+        }),
+        follower: makeFollower({}),
+        serverVersion: '1.0.0',
+      });
+
+    it('passes the plugin’s writeQueue through', async () => {
+      const writeQueue = {
+        running: {
+          method: 'set_fills',
+          runningMs: 5000,
+          figmaCalls: ['figma.getNodeByIdAsync(1:2)'],
+        },
+        waiting: 2,
+        lastFailed: null,
+      };
+      const result = await pingLeader({ apiVersion: '1.0.0', writeQueue });
+
+      expect(result.hop).toBe('e2e');
+      expect(result.plugin).toEqual({ apiVersion: '1.0.0', writeQueue });
+    });
+
+    it('answers without a writeQueue, and without an error, for a plugin too old to send one', async () => {
+      const result = await pingLeader({ apiVersion: '1.0.0', currentPageId: 'p1' });
+
+      expect(result.hop).toBe('e2e');
+      expect(result.dispatchError).toBeUndefined();
+      expect(result.plugin).toStrictEqual({ apiVersion: '1.0.0', currentPageId: 'p1' });
+      expect(formatPingResult(result)).not.toContain('writeQueue');
+    });
   });
 
   describe('which build each half runs', () => {

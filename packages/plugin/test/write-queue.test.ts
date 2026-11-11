@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createToolCall, type PluginBridgeMessage, PluginToolFailure } from '../protocol/bridge.js';
 import { dispatchSandboxMessage, type SandboxToolHandler } from '../src/dispatcher.js';
@@ -484,12 +484,14 @@ describe('sandbox write queue: abandoning a write that overruns', () => {
     });
 
     const first = bridge.handler('set_text', {}).catch((error: unknown) => error);
+    // Queued 1 s later, so each queued write's own 27 s bound falls after the first's.
+    await vi.advanceTimersByTimeAsync(1_000);
     const queued = [
       bridge.handler('set_fills', {}),
       bridge.handler('set_opacity', {}),
       bridge.handler('rename_node', {}),
     ];
-    await vi.advanceTimersByTimeAsync(26_999);
+    await vi.advanceTimersByTimeAsync(25_999);
     expect(events).toEqual([]);
 
     await vi.advanceTimersByTimeAsync(1);
@@ -793,4 +795,184 @@ describe('sandbox write queue: abandoning a write that overruns', () => {
       expect(after.filter(p => p.startsWith('rollback') || p === 'apply:3')).toEqual([]);
     },
   );
+});
+
+// `ping` is a read, so it answers while a write is stuck, and reports the queue: the running write,
+// how many wait, and the last write that was abandoned or missed a Figma call deadline. The queue
+// is module state that lives as long as the plugin, so each test loads a fresh copy of it.
+describe('sandbox write queue: what ping reports', () => {
+  let dispatchFresh: typeof dispatchSandboxMessage;
+  let handlersFor: typeof createSandboxHandlers;
+
+  beforeEach(async () => {
+    vi.resetModules();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    ({ dispatchSandboxMessage: dispatchFresh } = await import('../src/dispatcher.js'));
+    ({ createSandboxHandlers: handlersFor } = await import('../src/handlers/registry.js'));
+  });
+
+  /** The real bridge on each tool's real budget, wired to this test's fresh dispatcher. */
+  const freshBridge = (handlers: Record<string, SandboxToolHandler>) => {
+    const listener: { current: ((raw: unknown) => void) | null } = { current: null };
+    return createToolBridge({
+      subscribe: cb => {
+        listener.current = cb;
+        return () => {
+          listener.current = null;
+        };
+      },
+      postMessage: (msg: PluginBridgeMessage) => {
+        void (async (): Promise<void> => {
+          const outcome = await dispatchFresh({ raw: msg, handlers, editorType: 'figma' });
+          if (outcome.kind === 'reply') listener.current?.(outcome.reply);
+        })();
+      },
+    });
+  };
+
+  /** A Figma fake that answers ping, and whose lookup of `1:2` waits until the test answers it. */
+  const figmaWithHangingLookup = (extra: Record<string, unknown> = {}) =>
+    ({
+      apiVersion: '1.0.0',
+      editorType: 'figma',
+      currentPage: { id: '0:1', name: 'Page 1' },
+      fileKey: null,
+      mixed: Symbol('mixed'),
+      root: { children: [] },
+      getNodeByIdAsync: (id: string) => (id === '1:2' ? new Promise(() => {}) : null),
+      ...extra,
+    }) as unknown as typeof figma;
+  const RED = [{ type: 'SOLID', color: { r: 1, g: 0, b: 0 } }];
+
+  const pingQueue = async (bridge: ReturnType<typeof freshBridge>): Promise<unknown> =>
+    ((await bridge.handler('ping', {})) as { writeQueue: unknown }).writeQueue;
+
+  it('reports an idle queue: nothing running, nothing waiting, nothing failed', async () => {
+    const bridge = freshBridge(handlersFor(figmaWithHangingLookup()));
+
+    expect(await pingQueue(bridge)).toEqual({ running: null, waiting: 0, lastFailed: null });
+    bridge.dispose();
+  });
+
+  it('names the hanging write, its Figma call and the writes behind it, then the abandoned one', async () => {
+    const real = handlersFor(figmaWithHangingLookup());
+    const next = deferred<unknown>();
+    const setOpacity = vi.fn<SandboxToolHandler>(() => next.promise);
+    const bridge = freshBridge({
+      ping: real.ping!,
+      set_fills: real.set_fills!,
+      set_opacity: setOpacity,
+      rename_node: () => 'renamed',
+    });
+
+    const stuck = bridge
+      .handler('set_fills', { nodeId: '1:2', fills: RED })
+      .catch((error: unknown) => error);
+    // Each queued write's own 27 s bound runs from when it was queued: 28 s and 32 s here.
+    await vi.advanceTimersByTimeAsync(1_000);
+    const queued = [bridge.handler('set_opacity', {})];
+    await vi.advanceTimersByTimeAsync(4_000);
+    queued.push(bridge.handler('rename_node', {}));
+
+    expect(await pingQueue(bridge)).toEqual({
+      running: {
+        method: 'set_fills',
+        runningMs: 5_000,
+        figmaCalls: ['figma.getNodeByIdAsync(1:2)'],
+      },
+      waiting: 2,
+      lastFailed: null,
+    });
+
+    // set_fills is abandoned at its 27 s bound; set_opacity starts and hangs in turn.
+    await vi.advanceTimersByTimeAsync(22_000);
+    expect(await stuck).toBeInstanceOf(PluginToolFailure);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(await pingQueue(bridge)).toEqual({
+      running: { method: 'set_opacity', runningMs: 2_000, figmaCalls: [] },
+      waiting: 1,
+      lastFailed: {
+        method: 'set_fills',
+        outcome: 'abandoned',
+        figmaCalls: ['figma.getNodeByIdAsync(1:2)'],
+        agoMs: 2_000,
+      },
+    });
+
+    next.resolve('opacity');
+    expect(await Promise.all(queued)).toEqual(['opacity', 'renamed']);
+    expect(await pingQueue(bridge)).toEqual({
+      running: null,
+      waiting: 0,
+      lastFailed: expect.objectContaining({ method: 'set_fills', outcome: 'abandoned' }),
+    });
+    bridge.dispose();
+  });
+
+  it('reports a write whose Figma call missed its deadline as the last failed write', async () => {
+    const real = handlersFor(
+      figmaWithHangingLookup({
+        getNodeByIdAsync: async () => ({ id: '1:1', type: 'INSTANCE', swapComponent: () => {} }),
+        importComponentByKeyAsync: () => new Promise(() => {}),
+      }),
+    );
+    const bridge = freshBridge(real);
+
+    const swap = bridge
+      .handler('swap_component', { instanceId: '1:1', componentKey: 'key-abc' })
+      .catch((error: unknown) => error);
+    // The import's deadline is the 30 s budget less 10 s.
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(await swap).toBeInstanceOf(PluginToolFailure);
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    expect(await pingQueue(bridge)).toEqual({
+      running: null,
+      waiting: 0,
+      lastFailed: {
+        method: 'swap_component',
+        outcome: 'deadline',
+        figmaCalls: ['importComponentByKeyAsync(key-abc)'],
+        agoMs: 3_000,
+      },
+    });
+    bridge.dispose();
+  });
+
+  it('fails a write that reaches its bound before it starts, naming the write that blocks it', async () => {
+    const real = handlersFor(figmaWithHangingLookup());
+    const setOpacity = vi.fn<SandboxToolHandler>(() => ({ ok: true }));
+    const bridge = freshBridge({ ping: real.ping!, batch: real.batch!, set_opacity: setOpacity });
+
+    // A one-op batch is bounded at 127 s (120 s + 10 s, less 3 s), so it is still running when the
+    // write queued 10 s after it reaches its own 27 s bound.
+    const batch = bridge
+      .handler('batch', { ops: [{ tool: 'set_fills', params: { nodeId: '1:2', fills: RED } }] })
+      .catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(10_000);
+    const blocked = bridge.handler('set_opacity', {}).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(26_999);
+    expect(await pingQueue(bridge)).toEqual(expect.objectContaining({ waiting: 1 }));
+
+    await vi.advanceTimersByTimeAsync(1);
+    const error = await blocked;
+    expect(error).toBeInstanceOf(PluginToolFailure);
+    expect((error as PluginToolFailure).code).toBe('TIMEOUT');
+    const message = (error as Error).message;
+    expect(message).toContain('set_opacity did not start within 27 s');
+    expect(message).toContain('batch, running for 37 s');
+    expect(message).toContain('figma.getNodeByIdAsync(1:2)');
+    expect(await pingQueue(bridge)).toEqual(
+      expect.objectContaining({
+        running: expect.objectContaining({ method: 'batch' }),
+        waiting: 0,
+      }),
+    );
+
+    // The blocked write never runs, not even once the batch is out of the way.
+    await vi.advanceTimersByTimeAsync(127_000);
+    expect(await batch).toBeInstanceOf(PluginToolFailure);
+    expect(setOpacity).not.toHaveBeenCalled();
+    bridge.dispose();
+  });
 });
