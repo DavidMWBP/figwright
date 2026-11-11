@@ -175,7 +175,11 @@ describe('ping tool', () => {
 
     it('passes the plugin’s writeQueue through', async () => {
       const writeQueue = {
-        running: { method: 'set_fills', runningMs: 5000, figmaCalls: ['figma.getNodeByIdAsync(1:2)'] },
+        running: {
+          method: 'set_fills',
+          runningMs: 5000,
+          figmaCalls: ['figma.getNodeByIdAsync(1:2)'],
+        },
         waiting: 2,
         lastFailed: null,
       };

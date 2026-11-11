@@ -963,7 +963,10 @@ describe('sandbox write queue: what ping reports', () => {
     expect(message).toContain('batch, running for 37 s');
     expect(message).toContain('figma.getNodeByIdAsync(1:2)');
     expect(await pingQueue(bridge)).toEqual(
-      expect.objectContaining({ running: expect.objectContaining({ method: 'batch' }), waiting: 0 }),
+      expect.objectContaining({
+        running: expect.objectContaining({ method: 'batch' }),
+        waiting: 0,
+      }),
     );
 
     // The blocked write never runs, not even once the batch is out of the way.

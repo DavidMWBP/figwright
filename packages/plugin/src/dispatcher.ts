@@ -56,7 +56,7 @@ const ABANDON_MARGIN_MS = 3_000;
 
 let writeTail: Promise<unknown> = Promise.resolve();
 let running: { method: string; startedAt: number; signal: WriteSignal } | undefined;
-let waiting = 0;
+let waitingCount = 0;
 let lastFailed:
   | { method: string; outcome: 'abandoned' | 'deadline'; figmaCalls: string[]; at: number }
   | undefined;
@@ -84,7 +84,7 @@ export const writeQueueState = (): WriteQueueState => {
             runningMs: now - running.startedAt,
             figmaCalls: running.signal.waitingOn(),
           },
-    waiting,
+    waiting: waitingCount,
     lastFailed:
       lastFailed === undefined
         ? null
@@ -152,11 +152,11 @@ const enqueueWrite = (
   run: () => unknown,
 ): Promise<unknown> =>
   new Promise<unknown>((resolve, reject) => {
-    waiting += 1;
+    waitingCount += 1;
     let gaveUp = false;
     const waitTimer = setTimeout(() => {
       gaveUp = true;
-      waiting -= 1;
+      waitingCount -= 1;
       reject(blockedError(method, boundMs));
     }, boundMs);
     // The tail settles when this write ends or is abandoned, never with its result, so a write that
@@ -164,31 +164,40 @@ const enqueueWrite = (
     writeTail = writeTail.then(() => {
       clearTimeout(waitTimer);
       if (gaveUp) return undefined;
-      waiting -= 1;
+      waitingCount -= 1;
       running = { method, startedAt: Date.now(), signal };
-      return new Promise<void>(done => {
-        const timer = setTimeout(() => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const overran = new Promise<void>(abandoned => {
+        timer = setTimeout(() => {
           const error = abandonedError(method, boundMs, signal, lastProgress());
-          lastFailed = { method, outcome: 'abandoned', figmaCalls: signal.waitingOn(), at: Date.now() };
+          lastFailed = {
+            method,
+            outcome: 'abandoned',
+            figmaCalls: signal.waitingOn(),
+            at: Date.now(),
+          };
           signal.abandon(error);
           reject(error);
-          done();
+          abandoned();
         }, boundMs);
-        // Settling after the timer fired is a no-op, so a late result or rejection is dropped here.
-        Promise.resolve()
-          .then(run)
-          .then(resolve, (error: unknown) => {
-            const deadline = deadlineIn(error);
-            if (deadline !== undefined && !signal.abandoned) {
-              lastFailed = { method, outcome: 'deadline', figmaCalls: [deadline.call], at: Date.now() };
-            }
-            reject(error);
-          })
-          .finally(() => {
-            clearTimeout(timer);
-            done();
-          });
-      }).finally(() => {
+      });
+      // Settling after the timer fired is a no-op, so a late result or rejection is dropped here.
+      const settled = Promise.resolve()
+        .then(run)
+        .then(resolve, (error: unknown) => {
+          const deadline = deadlineIn(error);
+          if (deadline !== undefined && !signal.abandoned) {
+            lastFailed = {
+              method,
+              outcome: 'deadline',
+              figmaCalls: [deadline.call],
+              at: Date.now(),
+            };
+          }
+          reject(error);
+        })
+        .finally(() => clearTimeout(timer));
+      return Promise.race([settled, overran]).finally(() => {
         running = undefined;
       });
     });
