@@ -21,6 +21,8 @@
  * only what differs from the snapshot, in an order that keeps every write valid.
  */
 
+import { throwIfAbandoned } from '../write-signal.js';
+
 type Bag = Record<string, unknown>;
 
 const bagOf = (node: unknown): Bag => node as Bag;
@@ -155,7 +157,11 @@ const STYLE_LINKS: Readonly<Record<string, readonly [string, string]>> = {
 };
 
 /** Re-attach (or detach) each style to what the snapshot recorded. */
-const restoreStyleLinks = async (node: BaseNode, styles: Record<string, string>): Promise<void> => {
+const restoreStyleLinks = async (
+  figmaCtx: typeof figma,
+  node: BaseNode,
+  styles: Record<string, string>,
+): Promise<void> => {
   const bag = bagOf(node);
   for (const [idProp, setter] of Object.values(STYLE_LINKS)) {
     const id = styles[idProp];
@@ -164,6 +170,7 @@ const restoreStyleLinks = async (node: BaseNode, styles: Record<string, string>)
     if (typeof fn !== 'function') continue;
     // eslint-disable-next-line no-await-in-loop -- at most four links; keeps write order stable
     await (fn as (id: string) => Promise<void>).call(node, id);
+    throwIfAbandoned(figmaCtx);
   }
 };
 
@@ -199,10 +206,16 @@ export const captureProps = async (
   return { values, styles, bindings: await captureBindings(figmaCtx, node, bindingFields) };
 };
 
-export const restoreProps = async (node: BaseNode, snapshot: PropsSnapshot): Promise<void> => {
+export const restoreProps = async (
+  figmaCtx: typeof figma,
+  node: BaseNode,
+  snapshot: PropsSnapshot,
+): Promise<void> => {
+  throwIfAbandoned(figmaCtx);
   unbindAdded(node, snapshot.bindings);
   for (const [prop, value] of Object.entries(snapshot.values)) writeIfDifferent(node, prop, value);
-  await restoreStyleLinks(node, snapshot.styles);
+  await restoreStyleLinks(figmaCtx, node, snapshot.styles);
+  throwIfAbandoned(figmaCtx);
   rebind(node, snapshot.bindings);
 };
 
@@ -448,10 +461,12 @@ export const restoreText = async (
     const textStyleId = seg.textStyleId as string;
     if (text.getRangeTextStyleId(seg.start, seg.end) !== textStyleId) {
       await text.setRangeTextStyleIdAsync(seg.start, seg.end, textStyleId);
+      throwIfAbandoned(figmaCtx);
     }
     const fillStyleId = seg.fillStyleId as string;
     if (text.getRangeFillStyleId(seg.start, seg.end) !== fillStyleId) {
       await text.setRangeFillStyleIdAsync(seg.start, seg.end, fillStyleId);
+      throwIfAbandoned(figmaCtx);
     }
     for (const [field, alias] of Object.entries((seg.boundVariables ?? {}) as Bag)) {
       const id = (alias as { id?: unknown }).id;

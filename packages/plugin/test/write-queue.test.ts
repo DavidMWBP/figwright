@@ -412,3 +412,385 @@ describe('sandbox write queue', () => {
     },
   );
 });
+
+// A write still running at its queue bound is abandoned so later writes can run. The bound is the
+// tool's bridge budget less 3 s: 27 s on the default 30 s budget, and for a batch of four ops
+// 157 s (120 s + 4 × 10 s, less 3 s).
+describe('sandbox write queue: abandoning a write that overruns', () => {
+  /** A Figma fake whose lookup of `1:2` waits until the test answers it; other ids answer at once. */
+  const hangingLookup = () => {
+    const lookup = deferred<unknown>();
+    const fillsWritten = vi.fn<(value: unknown) => void>();
+    const rect = {
+      id: '1:2',
+      type: 'RECTANGLE',
+      get fills() {
+        return [];
+      },
+      set fills(value: unknown) {
+        fillsWritten(value);
+      },
+    };
+    const getNodeByIdAsync = vi.fn<(id: string) => Promise<unknown>>(id =>
+      id === '1:2' ? lookup.promise : Promise.resolve(null),
+    );
+    const figmaCtx = { mixed: Symbol('mixed'), getNodeByIdAsync } as unknown as typeof figma;
+    return { lookup, rect, fillsWritten, figmaCtx };
+  };
+  const RED = [{ type: 'SOLID', color: { r: 1, g: 0, b: 0 } }];
+
+  it('abandons a write still running at its bound with an error naming it, and runs the next write', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { figmaCtx } = hangingLookup();
+    const setOpacity = vi.fn<SandboxToolHandler>(() => ({ ok: true }));
+    const bridge = bridgeTo({
+      set_fills: createSandboxHandlers(figmaCtx).set_fills!,
+      set_opacity: setOpacity,
+    });
+
+    const write = bridge
+      .handler('set_fills', { nodeId: '1:2', fills: RED })
+      .catch((error: unknown) => error);
+    await flush();
+    const next = bridge.handler('set_opacity', {}).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(26_999);
+    expect(setOpacity).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    const error = await write;
+    expect(error).toBeInstanceOf(PluginToolFailure);
+    expect((error as PluginToolFailure).code).toBe('TIMEOUT');
+    const message = (error as Error).message;
+    expect(message).toContain('set_fills was abandoned after 27 s');
+    expect(message).toContain('waiting on figma.getNodeByIdAsync(1:2)');
+    expect(await next).toEqual({ ok: true });
+    bridge.dispose();
+  });
+
+  it('runs three writes queued behind an abandoned one, in arrival order', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const events: string[] = [];
+    const stuck = vi.fn<SandboxToolHandler>(() => new Promise<never>(() => {}));
+    const record = (name: string) =>
+      vi.fn<SandboxToolHandler>(() => {
+        events.push(name);
+        return name;
+      });
+    const bridge = bridgeTo({
+      set_text: stuck,
+      set_fills: record('set_fills'),
+      set_opacity: record('set_opacity'),
+      rename_node: record('rename_node'),
+    });
+
+    const first = bridge.handler('set_text', {}).catch((error: unknown) => error);
+    const queued = [
+      bridge.handler('set_fills', {}),
+      bridge.handler('set_opacity', {}),
+      bridge.handler('rename_node', {}),
+    ];
+    await vi.advanceTimersByTimeAsync(26_999);
+    expect(events).toEqual([]);
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await first).toBeInstanceOf(PluginToolFailure);
+    expect(await Promise.all(queued)).toEqual(['set_fills', 'set_opacity', 'rename_node']);
+    expect(events).toEqual(['set_fills', 'set_opacity', 'rename_node']);
+    bridge.dispose();
+  });
+
+  it('changes nothing when the abandoned write’s Figma call answers later', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { lookup, rect, fillsWritten, figmaCtx } = hangingLookup();
+    const bridge = bridgeTo({ set_fills: createSandboxHandlers(figmaCtx).set_fills! });
+
+    const write = bridge
+      .handler('set_fills', { nodeId: '1:2', fills: RED })
+      .catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(27_000);
+    expect(await write).toBeInstanceOf(PluginToolFailure);
+
+    lookup.resolve(rect);
+    await flush();
+    expect(fillsWritten).not.toHaveBeenCalled();
+    bridge.dispose();
+  });
+
+  it('changes nothing when the abandoned write was waiting on a node’s own method', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    // image.getSizeAsync is the image's method, not a figma.* call, so no Figma guard covers it.
+    const size = deferred<{ width: number; height: number }>();
+    const { rect, fillsWritten } = hangingLookup();
+    const figmaCtx = {
+      mixed: Symbol('mixed'),
+      getNodeByIdAsync: async () => rect,
+      base64Decode: () => new Uint8Array(),
+      createImage: () => ({ hash: 'h', getSizeAsync: () => size.promise }),
+    } as unknown as typeof figma;
+    const bridge = bridgeTo({ set_image_fill: createSandboxHandlers(figmaCtx).set_image_fill! });
+
+    const write = bridge
+      .handler('set_image_fill', { nodeId: '1:2', data: 'AA==' })
+      .catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(27_000);
+    expect((await write) as Error).toBeInstanceOf(PluginToolFailure);
+    expect(((await write) as Error).message).not.toContain('waiting on');
+
+    size.resolve({ width: 10, height: 10 });
+    await flush();
+    expect(fillsWritten).not.toHaveBeenCalled();
+    bridge.dispose();
+  });
+
+  it('gives a write that finishes just inside its bound its own result', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const events: string[] = [];
+    const setText = pendingWrite('set_text', events);
+    const bridge = bridgeTo({ set_text: setText.handler });
+
+    const write = bridge.handler('set_text', {}).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(26_999);
+    setText.done.resolve({ ok: true, nodeId: '1:2' });
+    expect(await write).toEqual({ ok: true, nodeId: '1:2' });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(bridge.pendingCount()).toBe(0);
+    bridge.dispose();
+  });
+
+  it('stops an abandoned rollback after a node style setter answers late', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const style = deferred<void>();
+    const styleStarted = deferred<void>();
+    const setBoundVariable = vi.fn<(field: string, variable: { id: string } | null) => void>();
+    const setFillStyleIdAsync = vi.fn<() => Promise<void>>(async () => {});
+    let weight = 1;
+    let bindings: Record<string, { type: string; id: string }> = {
+      strokeWeight: { type: 'VARIABLE_ALIAS', id: 'V:old' },
+    };
+    const rect = {
+      id: '1:1',
+      type: 'RECTANGLE',
+      parent: null,
+      strokes: [],
+      opacity: 1,
+      strokeStyleId: 'S:old',
+      get strokeWeight() {
+        return weight;
+      },
+      set strokeWeight(value: number) {
+        weight = value;
+        bindings = {};
+      },
+      get boundVariables() {
+        return bindings;
+      },
+      setBoundVariable: (field: string, variable: { id: string } | null) => {
+        setBoundVariable(field, variable);
+        bindings =
+          variable === null ? {} : { [field]: { type: 'VARIABLE_ALIAS', id: variable.id } };
+      },
+      setStrokeStyleIdAsync: vi.fn<() => Promise<void>>(async () => {
+        styleStarted.resolve();
+        await style.promise;
+      }),
+    };
+    const filled = {
+      id: '1:2',
+      type: 'RECTANGLE',
+      parent: null,
+      fills: [],
+      fillStyleId: 'S:fill',
+      setFillStyleIdAsync,
+    };
+    // Figma detaches a paint style on a raw paint write, even for an identical value.
+    Object.defineProperty(rect, 'strokes', {
+      get: () => [],
+      set: () => {
+        rect.strokeStyleId = '';
+      },
+    });
+    Object.defineProperty(filled, 'fills', {
+      get: () => [],
+      set: () => {
+        filled.fillStyleId = '';
+      },
+    });
+    const figmaCtx = {
+      root: { children: [] },
+      getNodeByIdAsync: async (id: string) => (id === rect.id ? rect : filled),
+      variables: { getVariableByIdAsync: async (id: string) => ({ id }) },
+    } as unknown as typeof figma;
+    const handlers = createSandboxHandlers(figmaCtx);
+    const bridge = bridgeTo(handlers);
+    const write = bridge
+      .handler('batch', {
+        ops: [
+          { tool: 'set_fills', params: { nodeId: filled.id, fills: [] } },
+          { tool: 'set_strokes', params: { nodeId: rect.id, strokes: [], strokeWeight: 2 } },
+          // Capture succeeds; apply rejects and starts rollback of ops 1 and 0.
+          { tool: 'set_opacity', params: { nodeId: rect.id, opacity: 'invalid' } },
+        ],
+      })
+      .catch((error: unknown) => error);
+    await styleStarted.promise;
+    expect(rect.setStrokeStyleIdAsync).toHaveBeenCalledOnce();
+    expect(rect.strokeWeight).toBe(1);
+    await vi.advanceTimersByTimeAsync(147_000);
+    expect(((await write) as Error).message).toContain('batch was abandoned after 147 s');
+
+    await bridge.handler('bind_variable_to_node', {
+      nodeId: rect.id,
+      field: 'strokeWeight',
+      variableId: 'V:new',
+    });
+    expect(setBoundVariable).toHaveBeenLastCalledWith('strokeWeight', { id: 'V:new' });
+    setBoundVariable.mockClear();
+    style.resolve();
+    await flush();
+    expect(setFillStyleIdAsync).not.toHaveBeenCalled();
+    expect(setBoundVariable).not.toHaveBeenCalled();
+    expect(rect.boundVariables.strokeWeight?.id).toBe('V:new');
+    bridge.dispose();
+  });
+
+  it('drops a late rejection of an abandoned write: no unhandled rejection, one reply', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const unhandled = vi.fn<(reason: unknown) => void>();
+    process.on('unhandledRejection', unhandled);
+    try {
+      const events: string[] = [];
+      const setText = pendingWrite('set_text', events);
+      const replies: unknown[] = [];
+      const log = vi.fn<(msg: string) => void>();
+      const outcome = dispatchSandboxMessage({
+        raw: createToolCall({ id: 'w1', method: 'set_text' }),
+        handlers: { set_text: setText.handler },
+        editorType: 'figma',
+        log,
+      }).then(reply => replies.push(reply));
+      await vi.advanceTimersByTimeAsync(27_000);
+      await outcome;
+      expect(replies).toEqual([
+        {
+          kind: 'reply',
+          reply: expect.objectContaining({ kind: 'tool-error', id: 'w1', code: 'TIMEOUT' }),
+        },
+      ]);
+
+      setText.done.reject(new Error('late failure'));
+      await flush();
+      await flush();
+      expect(unhandled).not.toHaveBeenCalled();
+      expect(replies).toHaveLength(1);
+      expect(log).not.toHaveBeenCalledWith(expect.stringContaining('late failure'));
+    } finally {
+      process.off('unhandledRejection', unhandled);
+    }
+  });
+
+  it('answers a same-requestId retry after abandonment without waiting on the abandoned write', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const stuck = vi.fn<SandboxToolHandler>(() => new Promise<never>(() => {}));
+    const handlers = { set_text: idempotent(createIdempotencyCache(), stuck) };
+    const params = { requestId: 'req-1', nodeId: '1:2', text: 'Hi' };
+
+    const original = dispatch(handlers, 'w1', 'set_text', params);
+    await vi.advanceTimersByTimeAsync(27_000);
+    expect(await original).toEqual({
+      kind: 'reply',
+      reply: expect.objectContaining({ kind: 'tool-error', id: 'w1', code: 'TIMEOUT' }),
+    });
+
+    // No timer moves from here: the retry must answer on its own, not at its own bound.
+    const retry = await dispatch(handlers, 'w2', 'set_text', params);
+    expect(retry).toEqual({
+      kind: 'reply',
+      reply: expect.objectContaining({
+        kind: 'tool-error',
+        id: 'w2',
+        code: 'TIMEOUT',
+        message: expect.stringContaining('set_text was abandoned after 27 s'),
+      }),
+    });
+    expect(stuck).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * A batch of four ops: set_opacity on 1:1 and 1:2, then set_reactions on 1:3 whose
+   * setReactionsAsync waits until the test answers it, then set_opacity on 1:4.
+   */
+  const hangingBatch = () => {
+    const reactions = deferred<void>();
+    const opacityWrites: string[] = [];
+    const node = (id: string): Record<string, unknown> => {
+      let opacity = 1;
+      return {
+        id,
+        type: 'RECTANGLE',
+        reactions: [],
+        setReactionsAsync: () => reactions.promise,
+        get opacity() {
+          return opacity;
+        },
+        set opacity(value: number) {
+          opacityWrites.push(`${id}=${value}`);
+          opacity = value;
+        },
+      };
+    };
+    const nodes = new Map(['1:1', '1:2', '1:3', '1:4'].map(id => [id, node(id)]));
+    const figmaCtx = {
+      mixed: Symbol('mixed'),
+      root: { children: [] },
+      getNodeByIdAsync: async (id: string) => nodes.get(id) ?? null,
+    } as unknown as typeof figma;
+    const params = {
+      ops: [
+        { tool: 'set_opacity', params: { nodeId: '1:1', opacity: 0.5 } },
+        { tool: 'set_opacity', params: { nodeId: '1:2', opacity: 0.5 } },
+        { tool: 'set_reactions', params: { nodeId: '1:3', reactions: [] } },
+        { tool: 'set_opacity', params: { nodeId: '1:4', opacity: 0.5 } },
+      ],
+    };
+    return { reactions, opacityWrites, figmaCtx, params };
+  };
+
+  it.each(['resolves', 'rejects'] as const)(
+    'an abandoned batch whose hanging op %s later applies no further op and runs no rollback',
+    async late => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      const { reactions, opacityWrites, figmaCtx, params } = hangingBatch();
+      const phases: string[] = [];
+      const outcome = dispatchSandboxMessage({
+        raw: createToolCall({ id: 'b1', method: 'batch', params }),
+        handlers: { batch: createSandboxHandlers(figmaCtx).batch! },
+        editorType: 'figma',
+        progress: state => phases.push(`${state.phase}:${state.inFlight.join(',')}`),
+      });
+      await flush();
+      expect(opacityWrites).toEqual(['1:1=0.5', '1:2=0.5']);
+      expect(phases.at(-1)).toBe('apply:2');
+
+      await vi.advanceTimersByTimeAsync(157_000);
+      const reply = await outcome;
+      expect(reply).toEqual({
+        kind: 'reply',
+        reply: expect.objectContaining({ kind: 'tool-error', id: 'b1', code: 'TIMEOUT' }),
+      });
+      const message = (reply as { reply: { message: string } }).reply.message;
+      expect(message).toContain('batch was abandoned after 157 s');
+      expect(message).toContain('outcome is unknown');
+      expect(message).toContain('completed op indexes=[0, 1]');
+      expect(message).toContain('Read back the targets');
+
+      const phasesAtAbandon = phases.length;
+      if (late === 'resolves') reactions.resolve();
+      else reactions.reject(new Error('late failure'));
+      await flush();
+      await flush();
+      expect(opacityWrites).toEqual(['1:1=0.5', '1:2=0.5']);
+      const after = phases.slice(phasesAtAbandon);
+      expect(after.filter(p => p.startsWith('rollback') || p === 'apply:3')).toEqual([]);
+    },
+  );
+});

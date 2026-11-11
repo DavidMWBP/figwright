@@ -2,6 +2,7 @@ import type { ImageFillResult } from '@figwright/shared';
 
 import type { SandboxToolHandler } from '../dispatcher.js';
 import { figmaCallWithin, figmaDeadlineFor } from '../figma-call.js';
+import { throwIfAbandoned } from '../write-signal.js';
 
 const SCALE_MODES = ['FILL', 'FIT', 'CROP', 'TILE'] as const;
 type ScaleMode = (typeof SCALE_MODES)[number];
@@ -96,6 +97,7 @@ export const createSetImageFillHandler =
             () => figmaCtx.createImageAsync(p.url as string),
           );
     const size = await image.getSizeAsync();
+    throwIfAbandoned(figmaCtx);
 
     // Without an index: the topmost IMAGE fill, or a new slot on top.
     let at = index;

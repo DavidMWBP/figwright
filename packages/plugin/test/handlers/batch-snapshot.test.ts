@@ -14,6 +14,7 @@ import {
 } from '../../src/handlers/batch-snapshot.js';
 import { createBatchHandler } from '../../src/handlers/batch.js';
 import { withInstanceIdLookup } from '../../src/node-lookup.js';
+import { attachWriteSignal, WriteAbandonedError, WriteSignal } from '../../src/write-signal.js';
 
 it('attributes a failed variable capture before any batch write', async () => {
   const cause = new Error('unavailable');
@@ -144,7 +145,7 @@ describe('restoreProps', () => {
     node.opacity = 0.2;
     log.length = 0;
 
-    await restoreProps(node as unknown as BaseNode, snapshot);
+    await restoreProps(ctx, node as unknown as BaseNode, snapshot);
 
     expect(node.fills).toEqual(['red']);
     expect(node.fillStyleId).toBe('S:red');
@@ -158,7 +159,7 @@ describe('restoreProps', () => {
     const ctx = ctxFor(new Map([[node.id, node]]));
     const snapshot = await captureProps(ctx, node as unknown as BaseNode, ['fills']);
     node.fills = ['red']; // same paints, style detached anyway (measured)
-    await restoreProps(node as unknown as BaseNode, snapshot);
+    await restoreProps(ctx, node as unknown as BaseNode, snapshot);
     expect(node.fillStyleId).toBe('S:red');
   });
 
@@ -170,10 +171,58 @@ describe('restoreProps', () => {
     (node.setBoundVariable as (f: string, v: { id: string }) => void)('opacity', { id: 'V:new' });
     log.length = 0;
 
-    await restoreProps(node as unknown as BaseNode, snapshot);
+    await restoreProps(ctx, node as unknown as BaseNode, snapshot);
 
     expect(node.boundVariables).toEqual({});
     expect(log[0]).toBe('bind opacity=null');
+  });
+
+  it('stops before the next style link and rebinding when a setter returns after abandonment', async () => {
+    const { node } = fakeNode();
+    let releaseStyle!: () => void;
+    let markStarted!: () => void;
+    const pending = new Promise<void>(resolve => {
+      releaseStyle = resolve;
+    });
+    const started = new Promise<void>(resolve => {
+      markStarted = resolve;
+    });
+    const nextStyle = vi.fn<() => Promise<void>>(async () => {});
+    Object.assign(node, {
+      strokes: ['red'],
+      strokeStyleId: 'S:stroke',
+      setStrokeStyleIdAsync: nextStyle,
+      setFillStyleIdAsync: async () => {
+        markStarted();
+        await pending;
+      },
+    });
+    const ctx = ctxFor(new Map([[node.id, node]]));
+    const signal = new WriteSignal();
+    attachWriteSignal(ctx, signal);
+    const snapshot = await captureProps(ctx, node as unknown as BaseNode, [
+      'fills',
+      'strokes',
+      'opacity',
+    ]);
+    node.fills = ['blue'];
+    node.strokeStyleId = '';
+    node.opacity = 0.2;
+    const bind = vi.spyOn(
+      node as Node & { setBoundVariable: (field: string, variable: unknown) => void },
+      'setBoundVariable',
+    );
+    const restore = restoreProps(ctx, node as unknown as BaseNode, snapshot).catch(
+      (error: unknown) => error,
+    );
+    await started;
+    const reason = new WriteAbandonedError('abandoned during rollback');
+    signal.abandon(reason);
+    releaseStyle();
+    await restore;
+    expect(nextStyle).not.toHaveBeenCalled();
+    expect(bind).not.toHaveBeenCalled();
+    expect(await restore).toBe(reason);
   });
 });
 

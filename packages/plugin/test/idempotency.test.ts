@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { createIdempotencyCache, idempotent } from '../src/idempotency.js';
+import { WriteAbandonedError, WriteSignal } from '../src/write-signal.js';
 
 const deferred = <T>() => {
   let resolve!: (value: T) => void;
@@ -78,6 +79,32 @@ describe('createIdempotencyCache', () => {
     expect(await cache.run('slow', fn)).toBe('fresh');
     expect(fn).toHaveBeenCalledTimes(2);
     expect(cache.size()).toBe(1);
+  });
+
+  it('replays an abandoned call as its abandonment error for the TTL, then runs fresh', async () => {
+    let clock = 0;
+    const cache = createIdempotencyCache(undefined, () => clock);
+    const pending = deferred<string>();
+    const fn = vi.fn<() => Promise<string>>(() => pending.promise);
+    const signal = new WriteSignal();
+    void cache.run('stuck', fn, signal);
+    await Promise.resolve();
+    const abandoned = new WriteAbandonedError('set_text was abandoned after 27 s');
+    signal.abandon(abandoned);
+
+    // The retry answers with the abandonment error while the original is still pending.
+    await expect(cache.run('stuck', fn)).rejects.toBe(abandoned);
+    // A late success of the abandoned call does not become the cached result.
+    pending.resolve('late');
+    await Promise.resolve();
+    clock = 59_999;
+    await expect(cache.run('stuck', fn)).rejects.toBe(abandoned);
+    expect(fn).toHaveBeenCalledTimes(1);
+
+    clock = 60_000;
+    fn.mockResolvedValueOnce('fresh');
+    expect(await cache.run('stuck', fn)).toBe('fresh');
+    expect(fn).toHaveBeenCalledTimes(2);
   });
 
   it('runs overlapping different keys independently', async () => {

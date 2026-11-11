@@ -2,6 +2,7 @@ import type { SandboxHandlers, SandboxToolHandler } from '../dispatcher.js';
 import { createIdempotencyCache, idempotent } from '../idempotency.js';
 import { withInstanceIdLookup } from '../node-lookup.js';
 import type { ReadRetryState } from '../read-retry.js';
+import { attachWriteSignal, withAbandonGuard, type WriteSignal } from '../write-signal.js';
 import { createAddComponentPropertyHandler } from './add-component-property.js';
 import { createAddPageHandler } from './add-page.js';
 import { createAddVariableModeHandler } from './add-variable-mode.js';
@@ -279,16 +280,20 @@ const buildHandlers = (
 export const createSandboxHandlers = (figmaApi: typeof figma): SandboxHandlers => {
   const cache = createIdempotencyCache();
   const fallback = { byIdRejected: false };
-  const makeHandlers = (): SandboxHandlers => {
+  const makeHandlers = (signal?: WriteSignal): SandboxHandlers => {
     const state: ReadRetryState = { used: 0, enabled: true };
-    return buildHandlers(withInstanceIdLookup(figmaApi, state, fallback), cache);
+    const api = signal === undefined ? figmaApi : withAbandonGuard(figmaApi, signal);
+    const figmaCtx = withInstanceIdLookup(api, state, fallback);
+    if (signal !== undefined) attachWriteSignal(figmaCtx, signal);
+    return buildHandlers(figmaCtx, cache);
   };
-  // Factories bind reads to this invocation's allowance; cache and instance fallback stay session-wide.
+  // Factories bind reads to this invocation's allowance and a write to its abandoned signal; cache
+  // and instance fallback stay session-wide.
   return Object.fromEntries(
     Object.keys(makeHandlers()).map(name => [
       name,
       (params: unknown, context: Parameters<SandboxToolHandler>[1]) =>
-        makeHandlers()[name]!(params, context),
+        makeHandlers(context?.signal)[name]!(params, context),
     ]),
   );
 };

@@ -1,6 +1,7 @@
 import type { MutateResult, SerializedLineHeight, SerializedPaint } from '@figwright/shared';
 
 import type { SandboxToolHandler } from '../dispatcher.js';
+import { throwIfAbandoned } from '../write-signal.js';
 import { toFigmaPaintsBound } from './bindings.js';
 import { toFigmaFontName, toFigmaLineHeight } from './convert.js';
 
@@ -136,10 +137,14 @@ export const createSetTextRangeHandler =
       // The face this style carries is not preloaded above, and does not need to be — the async
       // style-id setters load what they need themselves (see apply-style-to-node.ts, where the same
       // thing was checked against a real file with nothing loaded at all).
-      if (r.textStyleId !== undefined)
+      if (r.textStyleId !== undefined) {
         await text.setRangeTextStyleIdAsync(start, end, r.textStyleId);
-      if (r.fillStyleId !== undefined)
+        throwIfAbandoned(figmaCtx);
+      }
+      if (r.fillStyleId !== undefined) {
         await text.setRangeFillStyleIdAsync(start, end, r.fillStyleId);
+        throwIfAbandoned(figmaCtx);
+      }
       if (r.boundVariables !== undefined) {
         for (const [field, variableId] of Object.entries(r.boundVariables)) {
           let variable: Variable | null = null;
