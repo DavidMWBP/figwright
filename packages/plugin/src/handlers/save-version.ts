@@ -1,4 +1,5 @@
 import type { SandboxToolHandler } from '../dispatcher.js';
+import { figmaCallWithin, figmaDeadlineFor } from '../figma-call.js';
 
 export const createSaveVersionHandler =
   (figmaCtx: typeof figma): SandboxToolHandler =>
@@ -9,9 +10,16 @@ export const createSaveVersionHandler =
     if (p.description !== undefined && typeof p.description !== 'string')
       throw new TypeError('save_version: description must be a string');
 
-    const result =
-      p.description === undefined
-        ? await figmaCtx.saveVersionHistoryAsync(p.title)
-        : await figmaCtx.saveVersionHistoryAsync(p.title, p.description);
+    const title = p.title;
+    const description = p.description;
+    const result = await figmaCallWithin(
+      'saveVersionHistoryAsync',
+      JSON.stringify(title),
+      figmaDeadlineFor('save_version'),
+      () =>
+        description === undefined
+          ? figmaCtx.saveVersionHistoryAsync(title)
+          : figmaCtx.saveVersionHistoryAsync(title, description),
+    );
     return { ok: true, versionId: result?.id ?? null, fileName: figmaCtx.root.name };
   };

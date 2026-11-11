@@ -1,4 +1,4 @@
-import type { SandboxToolHandler } from '../dispatcher.js';
+import { type SandboxToolHandler, writeQueueState } from '../dispatcher.js';
 
 export const createPingHandler =
   (figmaCtx: typeof figma): SandboxToolHandler =>
@@ -9,4 +9,5 @@ export const createPingHandler =
     currentPageName: figmaCtx.currentPage.name,
     fileKey: figmaCtx.fileKey ?? null,
     ts: Date.now(),
+    writeQueue: writeQueueState(),
   });

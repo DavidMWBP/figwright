@@ -1,5 +1,6 @@
 import { figmaCall } from '../figma-call.js';
 import { retryRead } from '../read-retry.js';
+import { throwIfAbandoned } from '../write-signal.js';
 import {
   type BindingSnapshot,
   captureBindings,
@@ -339,6 +340,7 @@ const reapply = async (figmaCtx: typeof figma, node: BaseNode, entry: Entry): Pr
     const setter = STYLE_SETTERS[field];
     if (setter !== undefined) {
       await (bag[setter] as (id: unknown) => Promise<void>).call(node, entry.values[field]);
+      throwIfAbandoned(figmaCtx);
     } else if (field === 'componentProperties' && node.type === 'INSTANCE') {
       const want = entry.values.componentProperties as Record<string, PropertyValue>;
       const have = propertyValues(node);
@@ -348,6 +350,7 @@ const reapply = async (figmaCtx: typeof figma, node: BaseNode, entry: Entry): Pr
       if (Object.keys(changed).length > 0) node.setProperties(changed);
     } else if (field === 'reactions') {
       await (node as ReactionMixin).setReactionsAsync(entry.values.reactions as Reaction[]);
+      throwIfAbandoned(figmaCtx);
     } else if (restorable(entry.values[field])) {
       bag[field] = entry.values[field];
     }

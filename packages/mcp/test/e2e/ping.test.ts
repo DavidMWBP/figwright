@@ -53,6 +53,7 @@ describe('e2e ping smoke test', () => {
       currentPageName: 'Cover',
       fileKey: 'fk-123',
       ts: 1_700_000_000,
+      writeQueue: { running: null, waiting: 0, lastFailed: null },
     };
     trackSocket(
       await connectFakePlugin({

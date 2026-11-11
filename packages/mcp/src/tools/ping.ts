@@ -19,7 +19,13 @@ export const pingTool: ToolSpec = {
     '(versionSkew / buildSkew) when a stale older server still owns the plugin. sessions.all names ' +
     'each connected file as of its last activity, so a file whose tab has not been in front since ' +
     'it connected shows fileName: null — use list_files, which asks each plugin directly, when you ' +
-    'need the names (and use_file to claim one).',
+    'need the names (and use_file to claim one). plugin.writeQueue (absent from a plugin too old ' +
+    'to send it) is the routed file’s write queue: running is the write in progress ({ method, ' +
+    'runningMs, figmaCalls } naming the Figma calls it waits on, or null), waiting counts the ' +
+    'writes queued behind it, and lastFailed ({ method, outcome: "abandoned" | "deadline", ' +
+    'figmaCalls, agoMs }, or null) is the last write since the plugin started that was abandoned ' +
+    'at its bound or failed on a Figma call deadline, so a write failing as not started is blocked ' +
+    'by the running one.',
   inputSchema: z.object({}),
   kind: 'read',
 };

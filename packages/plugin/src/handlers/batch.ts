@@ -183,7 +183,7 @@ const propsInverse = (
     const { id, props: snapshot, text } = captured as PropsState;
     const node = await live(figmaCtx, id);
     if (node === null) return undefined;
-    await restoreProps(node, snapshot);
+    await restoreProps(figmaCtx, node, snapshot);
     return text === null ? undefined : restoreText(figmaCtx, node as TextNode, text);
   },
   touches: (_params, captured) => [(captured as PropsState).id],
@@ -739,7 +739,7 @@ const layoutPropsInverse: BatchInverse = {
     if (node === null) return undefined;
     unbindAdded(node, bindings);
     restoreGeometry(node as SceneNode, geometry);
-    await restoreProps(node, props);
+    await restoreProps(figmaCtx, node, props);
     rebind(node, bindings);
     return undefined;
   },
@@ -768,7 +768,7 @@ const restoreMixed = async (figmaCtx: typeof figma, s: MixedState): Promise<unkn
   const node = await live(figmaCtx, s.id);
   if (node === null) return undefined;
   unbindAdded(node, s.bindings);
-  if (s.props !== null) await restoreProps(node, s.props);
+  if (s.props !== null) await restoreProps(figmaCtx, node, s.props);
   if (s.geometry !== null) restoreGeometry(node as SceneNode, s.geometry);
   const note = s.text === null ? undefined : await restoreText(figmaCtx, node as TextNode, s.text);
   rebind(node, s.bindings);
@@ -2087,6 +2087,8 @@ export const createBatchHandler =
       const op = ops[i]!;
       const stoppedForTime = Date.now() >= stopAt;
       try {
+        // Abandoned by the write queue: a later write may already have run, so no further op.
+        context?.signal?.throwIfAbandoned();
         // Never race rollback against an in-flight Figma await. This check runs only after the
         // preceding apply has settled; the reserve is best effort, not a bound on Figma latency.
         if (stoppedForTime) throw new Error('rollback reserve reached');
@@ -2095,6 +2097,8 @@ export const createBatchHandler =
         completed.push(i);
         progress('apply', []);
       } catch (err) {
+        // Once abandoned, a rollback could restore old values over a write that ran since.
+        context?.signal?.throwIfAbandoned();
         // Unwind applied ops in reverse. Keep going even if one undo throws, but record which ones
         // failed — and which restored with residue — so the error never claims a clean rollback
         // that didn't happen.
@@ -2102,6 +2106,7 @@ export const createBatchHandler =
         const residue: string[] = [];
         progress('rollback', []);
         for (let j = i - 1; j >= 0; j -= 1) {
+          context?.signal?.throwIfAbandoned();
           progress('rollback', [j]);
           try {
             const note = await undoOp(figmaCtx, ops[j]!, captured[j]!, results[j]);
@@ -2113,6 +2118,7 @@ export const createBatchHandler =
           }
           progress('rollback', []);
         }
+        context?.signal?.throwIfAbandoned();
         for (const note of restoreFlows(figmaCtx, flowsBefore)) residue.push(`flows: ${note}`);
         const message = err instanceof Error ? err.message : String(err);
         const rollback =
