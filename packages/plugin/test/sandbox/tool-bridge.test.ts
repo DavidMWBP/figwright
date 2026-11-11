@@ -10,6 +10,7 @@ import {
 } from '../../protocol/bridge.js';
 import { dispatchSandboxMessage } from '../../src/dispatcher.js';
 import { createBatchHandler } from '../../src/handlers/batch.js';
+import { createSandboxHandlers } from '../../src/handlers/registry.js';
 import { createIdempotencyCache, idempotent } from '../../src/idempotency.js';
 import {
   createToolBridge,
@@ -47,7 +48,7 @@ const setup = (timeoutMs?: number): Harness => {
 
 describe('createToolBridge', () => {
   it('reports progress when a stop for time exhausts the rollback reserve', async () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
     vi.setSystemTime(0);
     const { bridge, sent, emit } = setup();
     let releaseApply!: () => void;
@@ -67,11 +68,34 @@ describe('createToolBridge', () => {
       markUndo = resolve;
     });
     try {
-      const nodes = new Map(['1:1', '1:2', '1:3'].map(id => [id, { id, name: 'before' }]));
+      const applied: string[] = [];
+      const nodes = new Map(
+        ['1:1', '1:2', '1:3'].map(id => {
+          let name = 'before';
+          return [
+            id,
+            {
+              id,
+              get name() {
+                return name;
+              },
+              set name(value: string) {
+                name = value;
+                if (value === 'after') applied.push(id);
+              },
+            },
+          ];
+        }),
+      );
       let rollingBack = false;
+      let applying = false;
       const figmaCtx = {
         root: { children: [] },
         getNodeByIdAsync: async (id: string) => {
+          if (applying && id === '1:2') {
+            markApply();
+            await applyPending;
+          }
           if (rollingBack && id === '1:1') {
             markUndo();
             await undoPending;
@@ -79,19 +103,7 @@ describe('createToolBridge', () => {
           return nodes.get(id) ?? null;
         },
       } as unknown as typeof figma;
-      const applied: string[] = [];
-      const handler = createBatchHandler(figmaCtx, {
-        rename_node: async params => {
-          const p = params as { nodeId: string; name: string };
-          nodes.get(p.nodeId)!.name = p.name;
-          applied.push(p.nodeId);
-          if (applied.length === 2) {
-            markApply();
-            await applyPending;
-          }
-          return { ok: true };
-        },
-      });
+      const handler = createSandboxHandlers(figmaCtx).batch!;
       const answer = bridge
         .handler('batch', {
           ops: [...nodes.keys()].map(nodeId => ({
@@ -106,6 +118,7 @@ describe('createToolBridge', () => {
         editorType: 'figma',
         progress: state => {
           rollingBack = state.phase === 'rollback';
+          applying = state.phase === 'apply';
           emit(state);
         },
       });
@@ -134,6 +147,8 @@ describe('createToolBridge', () => {
         },
       });
       if (outcome.kind === 'reply') emit(outcome.reply);
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(nodes.get('1:1')!.name).toBe('after');
       expect(nodes.get('1:3')!.name).toBe('before');
       expect(bridge.pendingCount()).toBe(0);
     } finally {

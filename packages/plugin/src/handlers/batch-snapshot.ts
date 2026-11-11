@@ -157,7 +157,11 @@ const STYLE_LINKS: Readonly<Record<string, readonly [string, string]>> = {
 };
 
 /** Re-attach (or detach) each style to what the snapshot recorded. */
-const restoreStyleLinks = async (node: BaseNode, styles: Record<string, string>): Promise<void> => {
+const restoreStyleLinks = async (
+  figmaCtx: typeof figma,
+  node: BaseNode,
+  styles: Record<string, string>,
+): Promise<void> => {
   const bag = bagOf(node);
   for (const [idProp, setter] of Object.values(STYLE_LINKS)) {
     const id = styles[idProp];
@@ -166,6 +170,7 @@ const restoreStyleLinks = async (node: BaseNode, styles: Record<string, string>)
     if (typeof fn !== 'function') continue;
     // eslint-disable-next-line no-await-in-loop -- at most four links; keeps write order stable
     await (fn as (id: string) => Promise<void>).call(node, id);
+    throwIfAbandoned(figmaCtx);
   }
 };
 
@@ -201,10 +206,16 @@ export const captureProps = async (
   return { values, styles, bindings: await captureBindings(figmaCtx, node, bindingFields) };
 };
 
-export const restoreProps = async (node: BaseNode, snapshot: PropsSnapshot): Promise<void> => {
+export const restoreProps = async (
+  figmaCtx: typeof figma,
+  node: BaseNode,
+  snapshot: PropsSnapshot,
+): Promise<void> => {
+  throwIfAbandoned(figmaCtx);
   unbindAdded(node, snapshot.bindings);
   for (const [prop, value] of Object.entries(snapshot.values)) writeIfDifferent(node, prop, value);
-  await restoreStyleLinks(node, snapshot.styles);
+  await restoreStyleLinks(figmaCtx, node, snapshot.styles);
+  throwIfAbandoned(figmaCtx);
   rebind(node, snapshot.bindings);
 };
 

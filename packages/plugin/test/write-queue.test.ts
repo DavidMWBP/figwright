@@ -557,6 +557,102 @@ describe('sandbox write queue: abandoning a write that overruns', () => {
     bridge.dispose();
   });
 
+  it('stops an abandoned rollback after a node style setter answers late', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const style = deferred<void>();
+    const styleStarted = deferred<void>();
+    const setBoundVariable = vi.fn<(field: string, variable: { id: string } | null) => void>();
+    const setFillStyleIdAsync = vi.fn<() => Promise<void>>(async () => {});
+    let weight = 1;
+    let bindings: Record<string, { type: string; id: string }> = {
+      strokeWeight: { type: 'VARIABLE_ALIAS', id: 'V:old' },
+    };
+    const rect = {
+      id: '1:1',
+      type: 'RECTANGLE',
+      parent: null,
+      strokes: [],
+      opacity: 1,
+      strokeStyleId: 'S:old',
+      get strokeWeight() {
+        return weight;
+      },
+      set strokeWeight(value: number) {
+        weight = value;
+        bindings = {};
+      },
+      get boundVariables() {
+        return bindings;
+      },
+      setBoundVariable: (field: string, variable: { id: string } | null) => {
+        setBoundVariable(field, variable);
+        bindings =
+          variable === null ? {} : { [field]: { type: 'VARIABLE_ALIAS', id: variable.id } };
+      },
+      setStrokeStyleIdAsync: vi.fn<() => Promise<void>>(async () => {
+        styleStarted.resolve();
+        await style.promise;
+      }),
+    };
+    const filled = {
+      id: '1:2',
+      type: 'RECTANGLE',
+      parent: null,
+      fills: [],
+      fillStyleId: 'S:fill',
+      setFillStyleIdAsync,
+    };
+    // Figma detaches a paint style on a raw paint write, even for an identical value.
+    Object.defineProperty(rect, 'strokes', {
+      get: () => [],
+      set: () => {
+        rect.strokeStyleId = '';
+      },
+    });
+    Object.defineProperty(filled, 'fills', {
+      get: () => [],
+      set: () => {
+        filled.fillStyleId = '';
+      },
+    });
+    const figmaCtx = {
+      root: { children: [] },
+      getNodeByIdAsync: async (id: string) => (id === rect.id ? rect : filled),
+      variables: { getVariableByIdAsync: async (id: string) => ({ id }) },
+    } as unknown as typeof figma;
+    const handlers = createSandboxHandlers(figmaCtx);
+    const bridge = bridgeTo(handlers);
+    const write = bridge
+      .handler('batch', {
+        ops: [
+          { tool: 'set_fills', params: { nodeId: filled.id, fills: [] } },
+          { tool: 'set_strokes', params: { nodeId: rect.id, strokes: [], strokeWeight: 2 } },
+          // Capture succeeds; apply rejects and starts rollback of ops 1 and 0.
+          { tool: 'set_opacity', params: { nodeId: rect.id, opacity: 'invalid' } },
+        ],
+      })
+      .catch((error: unknown) => error);
+    await styleStarted.promise;
+    expect(rect.setStrokeStyleIdAsync).toHaveBeenCalledOnce();
+    expect(rect.strokeWeight).toBe(1);
+    await vi.advanceTimersByTimeAsync(147_000);
+    expect(((await write) as Error).message).toContain('batch was abandoned after 147 s');
+
+    await bridge.handler('bind_variable_to_node', {
+      nodeId: rect.id,
+      field: 'strokeWeight',
+      variableId: 'V:new',
+    });
+    expect(setBoundVariable).toHaveBeenLastCalledWith('strokeWeight', { id: 'V:new' });
+    setBoundVariable.mockClear();
+    style.resolve();
+    await flush();
+    expect(setFillStyleIdAsync).not.toHaveBeenCalled();
+    expect(setBoundVariable).not.toHaveBeenCalled();
+    expect(rect.boundVariables.strokeWeight?.id).toBe('V:new');
+    bridge.dispose();
+  });
+
   it('drops a late rejection of an abandoned write: no unhandled rejection, one reply', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const unhandled = vi.fn<(reason: unknown) => void>();

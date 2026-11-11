@@ -183,7 +183,7 @@ const propsInverse = (
     const { id, props: snapshot, text } = captured as PropsState;
     const node = await live(figmaCtx, id);
     if (node === null) return undefined;
-    await restoreProps(node, snapshot);
+    await restoreProps(figmaCtx, node, snapshot);
     return text === null ? undefined : restoreText(figmaCtx, node as TextNode, text);
   },
   touches: (_params, captured) => [(captured as PropsState).id],
@@ -739,7 +739,7 @@ const layoutPropsInverse: BatchInverse = {
     if (node === null) return undefined;
     unbindAdded(node, bindings);
     restoreGeometry(node as SceneNode, geometry);
-    await restoreProps(node, props);
+    await restoreProps(figmaCtx, node, props);
     rebind(node, bindings);
     return undefined;
   },
@@ -768,7 +768,7 @@ const restoreMixed = async (figmaCtx: typeof figma, s: MixedState): Promise<unkn
   const node = await live(figmaCtx, s.id);
   if (node === null) return undefined;
   unbindAdded(node, s.bindings);
-  if (s.props !== null) await restoreProps(node, s.props);
+  if (s.props !== null) await restoreProps(figmaCtx, node, s.props);
   if (s.geometry !== null) restoreGeometry(node as SceneNode, s.geometry);
   const note = s.text === null ? undefined : await restoreText(figmaCtx, node as TextNode, s.text);
   rebind(node, s.bindings);
