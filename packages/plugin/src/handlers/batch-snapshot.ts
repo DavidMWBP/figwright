@@ -21,6 +21,8 @@
  * only what differs from the snapshot, in an order that keeps every write valid.
  */
 
+import { throwIfAbandoned } from '../write-signal.js';
+
 type Bag = Record<string, unknown>;
 
 const bagOf = (node: unknown): Bag => node as Bag;
@@ -448,10 +450,12 @@ export const restoreText = async (
     const textStyleId = seg.textStyleId as string;
     if (text.getRangeTextStyleId(seg.start, seg.end) !== textStyleId) {
       await text.setRangeTextStyleIdAsync(seg.start, seg.end, textStyleId);
+      throwIfAbandoned(figmaCtx);
     }
     const fillStyleId = seg.fillStyleId as string;
     if (text.getRangeFillStyleId(seg.start, seg.end) !== fillStyleId) {
       await text.setRangeFillStyleIdAsync(seg.start, seg.end, fillStyleId);
+      throwIfAbandoned(figmaCtx);
     }
     for (const [field, alias] of Object.entries((seg.boundVariables ?? {}) as Bag)) {
       const id = (alias as { id?: unknown }).id;

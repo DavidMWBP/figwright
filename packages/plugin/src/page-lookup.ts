@@ -1,5 +1,6 @@
 import { figmaCall } from './figma-call.js';
 import { retryRead } from './read-retry.js';
+import { throwIfAbandoned } from './write-signal.js';
 
 const CONNECTION_ERROR =
   'Unable to establish connection to Figma after 10 seconds. Please check your internet connection.';
@@ -61,5 +62,7 @@ export const loadPage = async (figmaCtx: typeof figma, id: string): Promise<Page
     }
     throw error;
   }
+  // `page.loadAsync` is the page's own method, so an abandoned write is stopped here, explicitly.
+  throwIfAbandoned(figmaCtx);
   return page;
 };

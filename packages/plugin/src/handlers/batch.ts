@@ -2087,6 +2087,8 @@ export const createBatchHandler =
       const op = ops[i]!;
       const stoppedForTime = Date.now() >= stopAt;
       try {
+        // Abandoned by the write queue: a later write may already have run, so no further op.
+        context?.signal?.throwIfAbandoned();
         // Never race rollback against an in-flight Figma await. This check runs only after the
         // preceding apply has settled; the reserve is best effort, not a bound on Figma latency.
         if (stoppedForTime) throw new Error('rollback reserve reached');
@@ -2095,6 +2097,8 @@ export const createBatchHandler =
         completed.push(i);
         progress('apply', []);
       } catch (err) {
+        // Once abandoned, a rollback could restore old values over a write that ran since.
+        context?.signal?.throwIfAbandoned();
         // Unwind applied ops in reverse. Keep going even if one undo throws, but record which ones
         // failed — and which restored with residue — so the error never claims a clean rollback
         // that didn't happen.
@@ -2102,6 +2106,7 @@ export const createBatchHandler =
         const residue: string[] = [];
         progress('rollback', []);
         for (let j = i - 1; j >= 0; j -= 1) {
+          context?.signal?.throwIfAbandoned();
           progress('rollback', [j]);
           try {
             const note = await undoOp(figmaCtx, ops[j]!, captured[j]!, results[j]);
@@ -2113,6 +2118,7 @@ export const createBatchHandler =
           }
           progress('rollback', []);
         }
+        context?.signal?.throwIfAbandoned();
         for (const note of restoreFlows(figmaCtx, flowsBefore)) residue.push(`flows: ${note}`);
         const message = err instanceof Error ? err.message : String(err);
         const rollback =

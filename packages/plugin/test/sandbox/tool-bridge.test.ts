@@ -120,16 +120,20 @@ describe('createToolBridge', () => {
         /phase=rollback.*completed op indexes=\[0, 1\].*in-flight op indexes=\[0\].*rolled-back op indexes=\[1\]/,
       );
       releaseUndo();
+      // The sandbox write queue gave up on the stuck rollback at its 147 s bound (the 150 s budget
+      // less 3 s); this harness does not deliver that reply, so the bridge timed out above.
       const outcome = await sandbox;
       expect(outcome).toMatchObject({
         kind: 'reply',
         reply: {
           kind: 'tool-error',
-          message: expect.stringMatching(/stopped for time after op 1.*rolled back 2 applied op/),
+          code: ErrorCode.Timeout,
+          message: expect.stringMatching(
+            /batch was abandoned after 147 s.*completed op indexes=\[0, 1\].*runs no rollback/,
+          ),
         },
       });
       if (outcome.kind === 'reply') emit(outcome.reply);
-      expect(nodes.get('1:1')!.name).toBe('before');
       expect(nodes.get('1:3')!.name).toBe('before');
       expect(bridge.pendingCount()).toBe(0);
     } finally {

@@ -1,4 +1,4 @@
-import { ErrorCode } from '@figwright/shared';
+import { ErrorCode, getToolBudget } from '@figwright/shared';
 
 import {
   createToolError,
@@ -12,10 +12,12 @@ import {
 } from '../protocol/bridge.js';
 import { withEditorContext } from '../protocol/editor-context.js';
 import { SANDBOX_WRITE_TOOLS } from './handlers/registry.js';
+import { WriteAbandonedError, WriteSignal } from './write-signal.js';
 
 export type SandboxToolHandler = (
   params: unknown,
-  context?: { progress: (state: BatchProgress) => void },
+  /** `signal` is set for a write: the queue abandons it there when the write overruns its bound. */
+  context?: { progress: (state: BatchProgress) => void; signal?: WriteSignal },
 ) => unknown | Promise<unknown>;
 export type SandboxHandlers = Record<string, SandboxToolHandler>;
 
@@ -38,11 +40,67 @@ export type DispatchOutcome =
 
 // One FIFO queue for every write in this sandbox. A batch captures old values, applies, and may roll
 // back; letting another write run in between would let that rollback restore values over it. Each
-// write starts once the previous one settled, resolved or rejected. Reads never wait here.
+// write starts once the previous one settled, resolved or rejected, or was abandoned. Reads never
+// wait here.
+//
+// A write still running at its bound is abandoned: its caller gets a named error, the next write
+// starts, and the write's signal makes it change nothing more (no further batch op, no rollback),
+// so the ordering guarantee above still holds. The bound is the tool's UI bridge budget less this
+// margin, so the error reaches the caller before the bridge gives up, and it outlasts each Figma
+// call's own deadline (budget less 10 s, figma-call.ts) so that more specific error wins.
+const ABANDON_MARGIN_MS = 3_000;
+
 let writeTail: Promise<unknown> = Promise.resolve();
 
-const enqueueWrite = (run: () => unknown): Promise<unknown> => {
-  const result = writeTail.then(run);
+const abandonedError = (
+  method: string,
+  boundMs: number,
+  signal: WriteSignal,
+  batch: BatchProgress | undefined,
+): WriteAbandonedError => {
+  const waiting = signal.waitingOn();
+  const ran =
+    `${method} was abandoned after ${boundMs / 1000} s: it was still running when the sandbox ` +
+    'write queue stopped waiting, so later writes can run' +
+    (waiting.length === 0 ? '.' : `. It was waiting on ${waiting.join(', ')}.`);
+  if (method !== 'batch') {
+    return new WriteAbandonedError(
+      `${ran} It may have applied part of its change before this point and applies nothing ` +
+        'after it. Figma work may still be running. Read back the targets before any retry.',
+    );
+  }
+  const completed =
+    batch === undefined
+      ? 'completed op indexes unknown'
+      : `completed op indexes=[${batch.completed.join(', ')}] (zero-based)`;
+  return new WriteAbandonedError(
+    `${ran} Batch outcome is unknown; ${completed}. It applies no further op and runs no ` +
+      'rollback. Figma work may still be running. Read back the targets before any retry.',
+  );
+};
+
+const enqueueWrite = (
+  method: string,
+  boundMs: number,
+  signal: WriteSignal,
+  lastProgress: () => BatchProgress | undefined,
+  run: () => unknown,
+): Promise<unknown> => {
+  const result = writeTail.then(
+    () =>
+      new Promise<unknown>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          const error = abandonedError(method, boundMs, signal, lastProgress());
+          signal.abandon(error);
+          reject(error);
+        }, boundMs);
+        // Settling after the timer fired is a no-op, so a late result or rejection is dropped here.
+        Promise.resolve()
+          .then(run)
+          .then(resolve, reject)
+          .finally(() => clearTimeout(timer));
+      }),
+  );
   writeTail = result.catch(() => {});
   return result;
 };
@@ -68,16 +126,36 @@ export const dispatchSandboxMessage = async (input: DispatchInput): Promise<Disp
   }
 
   try {
+    const isWrite = SANDBOX_WRITE_TOOLS.has(method);
+    const signal = isWrite ? new WriteSignal() : undefined;
+    let lastProgress: BatchProgress | undefined;
     const run = (): unknown =>
       handler(params, {
-        progress: state =>
-          input.progress?.({ tag: PLUGIN_BRIDGE_TAG, kind: 'tool-progress', id, ...state }),
+        progress: state => {
+          lastProgress = state;
+          input.progress?.({ tag: PLUGIN_BRIDGE_TAG, kind: 'tool-progress', id, ...state });
+        },
+        ...(signal === undefined ? {} : { signal }),
       });
-    const result = await (SANDBOX_WRITE_TOOLS.has(method) ? enqueueWrite(run) : run());
+    const result = await (signal === undefined
+      ? run()
+      : enqueueWrite(
+          method,
+          getToolBudget(method, params) - ABANDON_MARGIN_MS,
+          signal,
+          () => lastProgress,
+          run,
+        ));
     return { kind: 'reply', reply: createToolResult({ id, result }) };
   } catch (err) {
     const raised = err instanceof Error ? err.message : String(err);
     log(`[sandbox] handler ${method} threw: ${raised}`);
+    if (err instanceof WriteAbandonedError) {
+      return {
+        kind: 'reply',
+        reply: createToolError({ id, code: ErrorCode.Timeout, message: raised }),
+      };
+    }
     // FigJam and Dev Mode reject whole classes of call that Figma Design accepts, and the API's own
     // error rarely says which editor it came from. Naming it here is what lets an agent re-plan
     // instead of retrying the same call.
