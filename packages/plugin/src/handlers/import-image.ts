@@ -1,6 +1,7 @@
 import type { CreateResult } from '@figwright/shared';
 
 import type { SandboxToolHandler } from '../dispatcher.js';
+import { figmaCallWithin, figmaDeadlineFor } from '../figma-call.js';
 import { placeNode } from './place.js';
 
 const SCALE_MODES = ['FILL', 'FIT', 'CROP', 'TILE'] as const;
@@ -35,7 +36,12 @@ export const createImportImageHandler =
     const image =
       typeof p.data === 'string'
         ? figmaCtx.createImage(figmaCtx.base64Decode(p.data))
-        : await figmaCtx.createImageAsync(p.url as string);
+        : await figmaCallWithin(
+            'createImageAsync',
+            p.url as string,
+            figmaDeadlineFor('import_image'),
+            () => figmaCtx.createImageAsync(p.url as string),
+          );
     const size = await image.getSizeAsync();
 
     const rect = figmaCtx.createRectangle();

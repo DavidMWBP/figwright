@@ -1,6 +1,7 @@
 import type { CreateResult } from '@figwright/shared';
 
 import type { SandboxToolHandler } from '../dispatcher.js';
+import { figmaCallWithin, figmaDeadlineFor, LIBRARY_DEFERRAL_ADVICE } from '../figma-call.js';
 import { placeNode } from './place.js';
 
 /**
@@ -24,7 +25,14 @@ export const createCreateInstanceHandler =
 
     let component: ComponentNode;
     if (typeof p.componentKey === 'string') {
-      component = await figmaCtx.importComponentByKeyAsync(p.componentKey);
+      const key = p.componentKey;
+      component = await figmaCallWithin(
+        'importComponentByKeyAsync',
+        key,
+        figmaDeadlineFor('create_instance'),
+        () => figmaCtx.importComponentByKeyAsync(key),
+        LIBRARY_DEFERRAL_ADVICE,
+      );
     } else {
       const node = await figmaCtx.getNodeByIdAsync(p.componentId as string);
       if (node === null || node.type !== 'COMPONENT') {

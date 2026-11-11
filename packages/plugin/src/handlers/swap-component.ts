@@ -1,6 +1,7 @@
 import type { MutateResult } from '@figwright/shared';
 
 import type { SandboxToolHandler } from '../dispatcher.js';
+import { figmaCallWithin, figmaDeadlineFor, LIBRARY_DEFERRAL_ADVICE } from '../figma-call.js';
 
 /**
  * Swap an instance's main component. Provide a published `componentKey` (imported via the API) or a
@@ -28,7 +29,14 @@ export const createSwapComponentHandler =
 
     let component: ComponentNode;
     if (typeof p.componentKey === 'string') {
-      component = await figmaCtx.importComponentByKeyAsync(p.componentKey);
+      const key = p.componentKey;
+      component = await figmaCallWithin(
+        'importComponentByKeyAsync',
+        key,
+        figmaDeadlineFor('swap_component'),
+        () => figmaCtx.importComponentByKeyAsync(key),
+        LIBRARY_DEFERRAL_ADVICE,
+      );
     } else {
       const node = await figmaCtx.getNodeByIdAsync(p.componentId as string);
       if (node === null || node.type !== 'COMPONENT') {

@@ -1,6 +1,7 @@
 import type { StyleResult } from '@figwright/shared';
 
 import type { SandboxToolHandler } from '../dispatcher.js';
+import { figmaCallWithin, figmaDeadlineFor, LIBRARY_DEFERRAL_ADVICE } from '../figma-call.js';
 
 export const createImportStyleHandler =
   (figmaCtx: typeof figma): SandboxToolHandler =>
@@ -10,7 +11,14 @@ export const createImportStyleHandler =
       throw new TypeError('import_style: styleKey must be a non-empty string');
     }
 
-    const style = await figmaCtx.importStyleByKeyAsync(p.styleKey);
+    const key = p.styleKey;
+    const style = await figmaCallWithin(
+      'importStyleByKeyAsync',
+      key,
+      figmaDeadlineFor('import_style'),
+      () => figmaCtx.importStyleByKeyAsync(key),
+      LIBRARY_DEFERRAL_ADVICE,
+    );
     const result: StyleResult = { ok: true, styleId: style.id, name: style.name };
     return result;
   };
