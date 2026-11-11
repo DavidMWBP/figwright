@@ -199,10 +199,13 @@ const enqueueWrite = (
           (error: unknown) => {
             const deadline = deadlineIn(error);
             if (deadline !== undefined && !signal.abandoned) {
+              // The call that missed its deadline never answered, so the signal still tracks it under
+              // its full `figma.` path, the name the running entry showed.
+              const tracked = signal.waitingOn().find(call => call.endsWith(`.${deadline.call}`));
               lastFailed = {
                 method,
                 outcome: 'deadline',
-                figmaCalls: [deadline.call],
+                figmaCalls: [tracked ?? `figma.${deadline.call}`],
                 at: Date.now(),
               };
             }
