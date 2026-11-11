@@ -166,6 +166,11 @@ const enqueueWrite = (
       if (gaveUp) return undefined;
       waitingCount -= 1;
       running = { method, startedAt: Date.now(), signal };
+      // Before the caller hears back, so a ping sent on that reply no longer sees this write. A late
+      // settle of an abandoned write leaves the next write's entry alone.
+      const end = (): void => {
+        if (running?.signal === signal) running = undefined;
+      };
       let timer: ReturnType<typeof setTimeout> | undefined;
       const overran = new Promise<void>(abandoned => {
         timer = setTimeout(() => {
@@ -177,6 +182,7 @@ const enqueueWrite = (
             at: Date.now(),
           };
           signal.abandon(error);
+          end();
           reject(error);
           abandoned();
         }, boundMs);
@@ -184,22 +190,28 @@ const enqueueWrite = (
       // Settling after the timer fired is a no-op, so a late result or rejection is dropped here.
       const settled = Promise.resolve()
         .then(run)
-        .then(resolve, (error: unknown) => {
-          const deadline = deadlineIn(error);
-          if (deadline !== undefined && !signal.abandoned) {
-            lastFailed = {
-              method,
-              outcome: 'deadline',
-              figmaCalls: [deadline.call],
-              at: Date.now(),
-            };
-          }
-          reject(error);
-        })
+        .then(
+          (value: unknown) => {
+            end();
+            resolve(value);
+            return undefined;
+          },
+          (error: unknown) => {
+            const deadline = deadlineIn(error);
+            if (deadline !== undefined && !signal.abandoned) {
+              lastFailed = {
+                method,
+                outcome: 'deadline',
+                figmaCalls: [deadline.call],
+                at: Date.now(),
+              };
+            }
+            end();
+            reject(error);
+          },
+        )
         .finally(() => clearTimeout(timer));
-      return Promise.race([settled, overran]).finally(() => {
-        running = undefined;
-      });
+      return Promise.race([settled, overran]);
     });
   });
 
