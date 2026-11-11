@@ -1,5 +1,6 @@
 import { figmaCall } from './figma-call.js';
 import { attachReadRetry, retryRead, type ReadRetryState } from './read-retry.js';
+import { WriteAbandonedError } from './write-signal.js';
 
 /** `I<outermost instance id>;…` — the first segment is a plain id Figma can look up. */
 const INSTANCE_QUALIFIED = /^I([^;]+);/;
@@ -103,7 +104,9 @@ export const withInstanceIdLookup = (
     if (fallback.byIdRejected) return walkFromInstanceRoot(figmaCtx, root, id, proxy, probe);
     try {
       return await figmaCtx.getNodeByIdAsync(id);
-    } catch {
+    } catch (error) {
+      // An abandoned write's guard threw, not Figma: keep the session on the by-id path.
+      if (error instanceof WriteAbandonedError) throw error;
       fallback.byIdRejected = true;
       return walkFromInstanceRoot(figmaCtx, root, id, proxy, probe);
     }

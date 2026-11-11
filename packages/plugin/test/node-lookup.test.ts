@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createSandboxHandlers } from '../src/handlers/registry.js';
 import { withInstanceIdLookup } from '../src/node-lookup.js';
 import { resolveScope } from '../src/traverse.js';
+import { WriteAbandonedError } from '../src/write-signal.js';
 import { unloadedPage } from './page-fake.js';
 import { CONNECTION_ERROR } from './read-retry-fake.js';
 
@@ -351,6 +352,32 @@ describe('a by-id lookup that rejects instance-qualified ids', () => {
     expect(await ctx.getNodeByIdAsync('I2:6;9:9')).toBeNull();
     expect(await ctx.getNodeByIdAsync('I7:7;2:5')).toBeNull();
     expect(lookups).toEqual(['I2:6;2:5', '2:6', '2:6', '2:6', '7:7']);
+  });
+
+  it('rethrows an abandoned write without switching to the walk fallback', async () => {
+    const fallback = { byIdRejected: false };
+    const abandoned = fakeFigma('healthy');
+    const reason = new WriteAbandonedError('write abandoned');
+    const lookups: string[] = [];
+    // The write guard throws synchronously once its write is abandoned.
+    const guarded = {
+      ...abandoned.figmaCtx,
+      getNodeByIdAsync: (id: string) => {
+        lookups.push(id);
+        if (id.startsWith('I')) throw reason;
+        return abandoned.figmaCtx.getNodeByIdAsync(id);
+      },
+    } as unknown as typeof figma;
+    await expect(
+      withInstanceIdLookup(guarded, undefined, fallback).getNodeByIdAsync('I2:6;2:5'),
+    ).rejects.toBe(reason);
+    expect(fallback.byIdRejected).toBe(false);
+    expect(lookups).toEqual(['I2:6;2:5']);
+
+    const healthy = fakeFigma('healthy');
+    const ctx = withInstanceIdLookup(healthy.figmaCtx, undefined, fallback);
+    expect(await ctx.getNodeByIdAsync('I2:6;2:5')).toBe(healthy.sublayer);
+    expect(healthy.lookups).toEqual(['I2:6;2:5']);
   });
 
   it('lets a write handler (rename_node) change the node it falls back to', async () => {
