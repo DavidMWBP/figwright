@@ -39,6 +39,26 @@ describe('swap_component handler', () => {
     expect(swapComponent).toHaveBeenCalledWith(imported);
   });
 
+  it('swaps when the import answers just inside its 20 s deadline', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const swapComponent = vi.fn<() => void>();
+      const imported = { id: 'C:9', type: 'COMPONENT' };
+      const f = {
+        getNodeByIdAsync: async () => ({ id: '1:1', type: 'INSTANCE', swapComponent }),
+        importComponentByKeyAsync: () =>
+          new Promise(resolve => setTimeout(() => resolve(imported), 19_999)),
+      } as unknown as typeof figma;
+
+      const swapping = createSwapComponentHandler(f)({ instanceId: '1:1', componentKey: 'k' });
+      await vi.advanceTimersByTimeAsync(19_999);
+      await expect(swapping).resolves.toEqual({ ok: true, nodeId: '1:1' });
+      expect(swapComponent).toHaveBeenCalledWith(imported);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('throws on bad input or non-instance', async () => {
     await expect(createSwapComponentHandler(withNode({}))({ componentId: 'C:1' })).rejects.toThrow(
       /instanceId/,

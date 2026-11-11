@@ -2544,6 +2544,38 @@ describe('batch inverses for instances and text styles', () => {
     expect(current().main).toBe(mains.A);
   });
 
+  it('rolls back when a swap op import never answers, naming the op and the call', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const { instance, figmaCtx, mains, current } = makeInstance();
+      const never = new Promise<never>(() => {});
+      (figmaCtx as unknown as Record<string, unknown>).importComponentByKeyAsync = vi.fn<
+        (key: string) => Promise<unknown>
+      >(async (key: string) => (key === 'key-b' ? mains.B : never));
+      const handler = createBatchHandler(figmaCtx, {
+        swap_component: createSwapComponentHandler(figmaCtx),
+      });
+
+      const reading = Promise.resolve(
+        handler({
+          ops: [
+            { tool: 'swap_component', params: { instanceId: 'I:1', componentKey: 'key-b' } },
+            { tool: 'swap_component', params: { instanceId: 'I:1', componentKey: 'key-stuck' } },
+          ],
+        }),
+      ).catch(error => error);
+      await vi.advanceTimersByTimeAsync(20_000);
+
+      const error = (await reading) as Error;
+      expect(error.message).toMatch(/^batch: op 1 \(swap_component\) failed, rolled back 1 /);
+      expect(error.message).toContain('importComponentByKeyAsync(key-stuck) did not answer');
+      expect(instance.swapComponent).toHaveBeenCalledTimes(2);
+      expect(current().main).toBe(mains.A);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('restores a text style: unbinds what the op bound, reloads the old face, writes the old values', async () => {
     const log: string[] = [];
     let bound: Record<string, { type: string; id: string }> = {};

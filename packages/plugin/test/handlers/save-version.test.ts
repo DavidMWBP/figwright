@@ -56,6 +56,25 @@ describe('save_version handler', () => {
     });
   });
 
+  it('saves when Figma answers just inside the 20 s deadline', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const { handler, saveVersionHistoryAsync } = setup();
+      saveVersionHistoryAsync.mockImplementation(
+        () => new Promise(resolve => setTimeout(() => resolve({ id: 'version-2' }), 19_999)),
+      );
+      const saving = Promise.resolve(handler({ title: 'Before edits' }));
+      await vi.advanceTimersByTimeAsync(19_999);
+      await expect(saving).resolves.toEqual({
+        ok: true,
+        versionId: 'version-2',
+        fileName: 'Design file',
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('propagates the original Figma rejection', async () => {
     const { handler, saveVersionHistoryAsync } = setup();
     const error = new Error('View-only file');
