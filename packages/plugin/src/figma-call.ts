@@ -12,6 +12,16 @@ const DEADLINE_MARGIN_MS = 10_000;
 /** Deadline for one Figma call inside `tool`'s handler: its UI bridge budget less the margin. */
 export const figmaDeadlineFor = (tool: string): number => getToolBudget(tool) - DEADLINE_MARGIN_MS;
 
+/** A Figma call that did not answer within its deadline; `call` names it as `<call>(<target>)`. */
+export class FigmaDeadlineError extends Error {
+  readonly call: string;
+
+  constructor(message: string, call: string) {
+    super(message);
+    this.call = call;
+  }
+}
+
 /**
  * Wait on one Figma call for at most `deadlineMs`. Figma cannot cancel the call, so on expiry this
  * rejects with an error that names the call and says it may still finish; the caller's code after
@@ -31,7 +41,12 @@ export const figmaCallWithin = async <T>(
       const waited =
         `${call}(${target}) did not answer within ${deadlineMs / 1000} s. ` +
         'The call was not cancelled and may still finish in Figma; nothing after it was applied.';
-      reject(new Error(advice === undefined ? waited : `${waited} ${advice}`));
+      reject(
+        new FigmaDeadlineError(
+          advice === undefined ? waited : `${waited} ${advice}`,
+          `${call}(${target})`,
+        ),
+      );
     }, deadlineMs);
   });
   try {
