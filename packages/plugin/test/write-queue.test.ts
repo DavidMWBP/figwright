@@ -909,7 +909,7 @@ describe('sandbox write queue: what ping reports', () => {
     bridge.dispose();
   });
 
-  it('reports a write whose Figma call missed its deadline as the last failed write', async () => {
+  it('names the figma call of a deadline-failed write like the running entry', async () => {
     const real = handlersFor(
       figmaWithHangingLookup({
         getNodeByIdAsync: async () => ({ id: '1:1', type: 'INSTANCE', swapComponent: () => {} }),
@@ -921,8 +921,19 @@ describe('sandbox write queue: what ping reports', () => {
     const swap = bridge
       .handler('swap_component', { instanceId: '1:1', componentKey: 'key-abc' })
       .catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(await pingQueue(bridge)).toEqual({
+      running: {
+        method: 'swap_component',
+        runningMs: 10_000,
+        figmaCalls: ['figma.importComponentByKeyAsync(key-abc)'],
+      },
+      waiting: 0,
+      lastFailed: null,
+    });
+
     // The import's deadline is the 30 s budget less 10 s.
-    await vi.advanceTimersByTimeAsync(20_000);
+    await vi.advanceTimersByTimeAsync(10_000);
     expect(await swap).toBeInstanceOf(PluginToolFailure);
     await vi.advanceTimersByTimeAsync(3_000);
 
@@ -932,7 +943,7 @@ describe('sandbox write queue: what ping reports', () => {
       lastFailed: {
         method: 'swap_component',
         outcome: 'deadline',
-        figmaCalls: ['importComponentByKeyAsync(key-abc)'],
+        figmaCalls: ['figma.importComponentByKeyAsync(key-abc)'],
         agoMs: 3_000,
       },
     });
